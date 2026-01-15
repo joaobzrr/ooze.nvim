@@ -2,7 +2,7 @@
 
 (defpackage #:ooze-server
   (:use #:cl)
-  (:export #:start-server #:stop-server)
+  (:export #:start-server #:stop-server #:main)
   (:local-nicknames
    (#:usocket #:usocket)
    (#:bt #:bordeaux-threads)
@@ -150,3 +150,27 @@
         (setf *server-thread* nil)
         (format t "Server stopped.~%"))
       (format t "Ooze server is not running or thread already stopped.~%")))
+
+(defun parse-cli-args (args)
+  "Parses command-line arguments for --host and --port."
+  (let ((host nil)
+        (port nil)
+        ;; Make a copy so we don't modify the original list
+        (remaining-args (copy-list args)))
+    (loop while remaining-args
+          for arg = (pop remaining-args)
+          do (cond
+               ((string-equal arg "--host")
+                (setf host (pop remaining-args)))
+               ((string-equal arg "--port")
+                (let ((port-str (pop remaining-args)))
+                  (when port-str
+                    (setf port (parse-integer port-str :junk-allowed t)))))))
+    (list :host host :port port)))
+
+(defun main ()
+  "The main entry point for running the server from the command line."
+  (let* ((cli-args (parse-cli-args sb-ext:*posix-argv*))
+         (host (or (getf cli-args :host) "127.0.0.1"))
+         (port (or (getf cli-args :port) 4005)))
+    (start-server :host host :port port)))
