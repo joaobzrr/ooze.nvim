@@ -151,12 +151,12 @@ function M.connect(host, port, on_connect)
 end
 
 ---Send an evaluation request.
----@param form string
+---@param source string
 ---@param cb OozeRpcCallback?
-function M.send(form, cb)
+function M.eval(source, cb)
 	_request({
 		op = "eval",
-		code = form,
+		code = source,
 	}, cb)
 end
 

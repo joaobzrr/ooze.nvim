@@ -1,4 +1,4 @@
-(ql:quickload '("usocket" "bordeaux-threads" "cl-json" "flexi-streams"))
+(ql:quickload '("usocket" "bordeaux-threads" "com.inuoe.jzon" "cl-json" "flexi-streams" "alexandria"))
 
 (defpackage #:ooze-server
   (:use #:cl)
@@ -8,8 +8,9 @@
   (:local-nicknames
    (#:usocket #:usocket)
    (#:bt      #:bordeaux-threads)
-   (#:json    #:cl-json)
-   (#:flexi   #:flexi-streams)))
+   (#:jzon    #:com.inuoe.jzon)
+   (#:flexi   #:flexi-streams)
+   (#:alex    #:alexandria)))
 
 (in-package #:ooze-server)
 
@@ -20,59 +21,74 @@
   "Holds the main server listening socket.")
 
 (defun read-bytes (stream count)
-  "Reads exactly COUNT bytes from STREAM."
-  (let ((buffer (make-array count
-                            :element-type '(unsigned-byte 8))))
+  (let ((buffer (make-array count :element-type '(unsigned-byte 8))))
     (read-sequence buffer stream)
     buffer))
 
 (defun process-request (body-str stream)
   "Decodes a JSON request, evaluates it, and sends a JSON response."
   (handler-case
-      (let* ((request (json:decode-json-from-string body-str))
-             (id      (cdr (assoc :id request)))
-             (op      (cdr (assoc :op request))))
+      (let* ((request (jzon:parse body-str))
+             (id      (gethash "id" request))
+             (op      (gethash "op" request)))
         (when (and id op)
           (let ((response
                   (cond
                     ((string-equal op "eval")
-                     (let ((code (cdr (assoc :code request))))
+                     (let ((source (gethash "code" request)))
                        (handler-case
-                           (let* ((form   (read-from-string code))
-                                  (result nil)
-                                  (output (with-output-to-string (*standard-output*)
-                                            (setf result (eval form)))))
-                             `((:id     . ,id)
-                               (:ok     . t)
-                               (:result . ,(prin1-to-string result))
-                               (:stdout . ,output)))
+                           (let ((results '()))
+                             (with-input-from-string (s source)
+                               (loop
+                                 (handler-case
+                                     (let ((form (read s nil 'eof)))
+                                       (when (eq form 'eof) (return))
+                                       (let (value form-stdout)
+                                         (setf form-stdout
+                                               (with-output-to-string (*standard-output*)
+                                                 (setf value (eval form))))
+                                         (push (alex:plist-hash-table
+                                                `("ok"     t
+                                                  "value"  ,(prin1-to-string value)
+                                                  "stdout" ,form-stdout)
+                                                :test 'equal)
+                                               results)))
+                                   (error (c)
+                                     (push (alex:plist-hash-table
+                                            `("ok"  nil  ;; nil = JSON false in jzon
+                                              "err" ,(format nil "Evaluation error: ~a" c))
+                                            :test 'equal)
+                                           results)))))
+                             (setq results (nreverse results))
+                             (alex:plist-hash-table
+                              `("id"      ,id
+                                "ok"      t
+                                "results" ,results)
+                              :test 'equal))
                          (error (c)
-                           `((:id  . ,id)
-                             (:ok  . nil)
-                             (:err . ,(format nil
-                                              "Evaluation error: ~a"
-                                              c)))))))
+                           (alex:plist-hash-table
+                            `("id" ,id
+                              "ok"  nil
+                              "err" ,(format nil "Evaluation error: ~a" c))
+                            :test 'equal)))))
                     (t
-                     `((:id  . ,id)
-                       (:ok  . nil)
-                       (:err . "Unknown operation"))))))
+                     (alex:plist-hash-table
+                      `("id" ,id
+                        "ok"  nil
+                        "err" "Unknown operation")
+                      :test 'equal)))))
             (when response
-              (let* ((response-json
-                       (json:encode-json-to-string response))
-                     (response-msg
-                       (format nil "~6,'0X~a"
-                               (length response-json)
-                               response-json))
-                     (octets
-                       (flexi:string-to-octets
-                        response-msg
-                        :external-format :utf-8)))
+              (let* ((response-json (jzon:stringify response))
+                     (response-msg (format nil "~6,'0X~a"
+                                           (length response-json)
+                                           response-json))
+                     (octets (flexi:string-to-octets
+                              response-msg
+                              :external-format :utf-8)))
                 (write-sequence octets stream)
                 (finish-output stream))))))
     (error (c)
-      (format *error-output*
-              "Failed to process request: ~a~%"
-              c))))
+      (format *error-output* "Failed to process request: ~a~%" c))))
 
 (defun handle-client (socket)
   "Handles a single client connection."

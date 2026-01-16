@@ -5,7 +5,7 @@ local M = {}
 ---@private
 ---@param predicate fun(node: TSNode): boolean
 ---@return TSNode?
-local function find_form_from_cursor(predicate)
+local function find_sexp_from_cursor(predicate)
     local buf = vim.api.nvim_get_current_buf()
     local cursor = vim.api.nvim_win_get_cursor(0)
     local row = cursor[1] - 1
@@ -44,20 +44,20 @@ local function find_form_from_cursor(predicate)
     return last_match
 end
 
---- Finds the nearest (innermost) enclosing form.
+--- Finds the nearest enclosing form.
 ---@return string? The text of the form, or nil if not found.
-function M.get_nearest_form_at_cursor()
-    local node = find_form_from_cursor(function(n)
+function M.get_enclosing_sexp_at_cursor()
+    local node = find_sexp_from_cursor(function(n)
         return n:type() == "list_lit"
     end)
 
     return node and vim.treesitter.get_node_text(node, 0) or nil
 end
 
---- Finds the top-level Lisp form containing the cursor.
+--- Finds the outermost Lisp form containing the cursor.
 ---@return string?
-function M.get_outermost_form_at_cursor()
-    local node = find_form_from_cursor(function(n)
+function M.get_outermost_sexp_at_cursor()
+    local node = find_sexp_from_cursor(function(n)
         local parent = n:parent()
         return parent ~= nil and parent:type() == "source"
     end)

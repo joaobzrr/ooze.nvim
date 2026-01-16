@@ -1,63 +1,75 @@
----@module 'ooze'
-
 local rpc = require("ooze.rpc")
-local ts = require('ooze.ts')
+local ts = require("ooze.ts")
 local config = require("ooze.config")
 
 local M = {}
-
----@type OozeConfig The merged configuration for the plugin.
 M.opts = {}
 
----The main setup function for the plugin.
----Users will call this from their init.lua file.
----@param opts OozeConfig? User-provided configuration overrides.
 function M.setup(opts)
 	M.opts = vim.tbl_deep_extend("force", config, opts or {})
-
-	---@type OozeConfigServer
 	local server_opts = M.opts.server
 	if server_opts and server_opts.host and server_opts.port then
 		rpc.connect(server_opts.host, server_opts.port, function()
 			vim.notify("Ooze: Connected to Lisp server.", vim.log.levels.INFO)
 		end)
-	else
-		vim.notify("Ooze: Server host or port not configured.", vim.log.levels.ERROR)
 	end
 end
 
----@param code string?
-local function eval_code(code)
-    if not code or code == "" then
-        vim.notify("Ooze: No form found at cursor.", vim.log.levels.WARN)
-        return
-    end
+---Displays evaluation results from the server response
+local function display_results(res)
+	if not res then
+		vim.notify("Ooze: No response from server.", vim.log.levels.ERROR)
+		return
+	end
 
-    rpc.send(code, function(res)
-        if not res then
-            vim.notify("Ooze Eval Error: No response from server.", vim.log.levels.ERROR)
-            return
-        end
+	if res.err then
+		vim.notify("Ooze RPC Error: " .. res.err, vim.log.levels.ERROR)
+		return
+	end
 
-        if res.err then
-            vim.notify("Ooze Eval Error: " .. res.err, vim.log.levels.ERROR)
-            return
-        end
+	if not res.results or #res.results == 0 then
+		vim.notify("Ooze: No results.", vim.log.levels.WARN)
+		return
+	end
 
-        vim.notify(
-            "Ooze Eval Result:\n" .. vim.inspect(res),
-            vim.log.levels.INFO
-        )
-    end)
+	-- If there's only one result (common case for sexp eval), show it simply
+	if #res.results == 1 then
+		local result = res.results[1]
+		if result.ok then
+			vim.notify("=> " .. result.value, vim.log.levels.INFO)
+		else
+			vim.notify("Error: " .. result.err, vim.log.levels.ERROR)
+		end
+	else
+		-- Multiple results (for Buffer eval)
+		local lines = { "Buffer Results:" }
+		for i, r in ipairs(res.results) do
+			local status = r.ok and "OK" or "ERR"
+			local val = r.ok and r.value or r.err
+			table.insert(lines, string.format("%d [%s]: %s", i, status, val))
+		end
+		vim.notify(table.concat(lines, "\n"), vim.log.levels.INFO)
+	end
 end
 
-function M.eval_nearest_form_at_cursor()
-    eval_code(ts.get_nearest_form_at_cursor())
+function M.eval(code)
+	if not code or code == "" then
+		return
+	end
+	rpc.eval(code, display_results)
 end
 
----Evaluates the outermost Lisp form at the cursor's position.
-function M.eval_outermost_form_at_cursor()
-    eval_code(ts.get_outermost_form_at_cursor())
+function M.eval_enclosing_sexp_at_cursor()
+	M.eval(ts.get_enclosing_sexp_at_cursor())
+end
+
+function M.eval_outermost_sexp_at_cursor()
+	M.eval(ts.get_outermost_sexp_at_cursor())
+end
+
+function M.eval_buffer()
+	local lines = vim.api.nvim_buf_get_lines(0, 0, -1, false)
+	M.eval(table.concat(lines, "\n"))
 end
 
 return M
