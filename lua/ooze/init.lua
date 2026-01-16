@@ -1,6 +1,7 @@
 ---@module 'ooze'
 
 local rpc = require("ooze.rpc")
+local ts = require('ooze.ts')
 local config = require("ooze.config")
 
 local M = {}
@@ -25,27 +26,41 @@ function M.setup(opts)
 	end
 end
 
----Evaluates the current line of code.
-function M.eval_current_line()
-	local line = vim.api.nvim_get_current_line()
+---@param code string?
+local function eval_code(code)
+    if not code or code == "" then
+        vim.notify("Ooze: No form found at cursor.", vim.log.levels.WARN)
+        return
+    end
 
-	local package = "common-lisp-user"
+    -- TODO: derive package from buffer (e.g. in-package form)
+    local package = "common-lisp-user"
 
-	rpc.send(line, package, function(res)
-		---@param res OozeRpcResponse
-		if not res then
-			vim.notify("Ooze Eval Error: No response from server.", vim.log.levels.ERROR)
-			return
-		end
+    rpc.send(code, package, function(res)
+        if not res then
+            vim.notify("Ooze Eval Error: No response from server.", vim.log.levels.ERROR)
+            return
+        end
 
-		if res.err then
-			vim.notify("Ooze Eval Error: " .. res.err, vim.log.levels.ERROR)
-			return
-		end
+        if res.err then
+            vim.notify("Ooze Eval Error: " .. res.err, vim.log.levels.ERROR)
+            return
+        end
 
-		print("Ooze Eval Result:")
-		print(vim.inspect(res))
-	end)
+        vim.notify(
+            "Ooze Eval Result:\n" .. vim.inspect(res),
+            vim.log.levels.INFO
+        )
+    end)
+end
+
+function M.eval_nearest_form_at_cursor()
+    eval_code(ts.get_nearest_form_at_cursor())
+end
+
+---Evaluates the outermost Lisp form at the cursor's position.
+function M.eval_outermost_form_at_cursor()
+    eval_code(ts.get_outermost_form_at_cursor())
 end
 
 return M
