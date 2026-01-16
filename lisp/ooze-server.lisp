@@ -36,17 +36,12 @@
           (let ((response
                   (cond
                     ((string-equal op "eval")
-                     (let* ((code     (cdr (assoc :code request)))
-                            (pkg-name (cdr (assoc :package request)))
-                            (package  (find-package
-                                       (string-upcase pkg-name))))
+                     (let ((code (cdr (assoc :code request))))
                        (handler-case
                            (let* ((form   (read-from-string code))
                                   (result nil)
-                                  (output
-                                    (with-output-to-string (*standard-output*)
-                                      (let ((*package* package))
-                                        (setf result (eval form))))))
+                                  (output (with-output-to-string (*standard-output*)
+                                            (setf result (eval form)))))
                              `((:id     . ,id)
                                (:ok     . t)
                                (:result . ,(prin1-to-string result))

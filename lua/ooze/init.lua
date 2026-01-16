@@ -33,10 +33,7 @@ local function eval_code(code)
         return
     end
 
-    -- TODO: derive package from buffer (e.g. in-package form)
-    local package = "common-lisp-user"
-
-    rpc.send(code, package, function(res)
+    rpc.send(code, function(res)
         if not res then
             vim.notify("Ooze Eval Error: No response from server.", vim.log.levels.ERROR)
             return

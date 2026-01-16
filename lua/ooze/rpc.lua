@@ -152,25 +152,21 @@ end
 
 ---Send an evaluation request.
 ---@param form string
----@param pkg string
 ---@param cb OozeRpcCallback?
-function M.send(form, pkg, cb)
+function M.send(form, cb)
 	_request({
 		op = "eval",
 		code = form,
-		package = pkg or "nil",
 	}, cb)
 end
 
 ---Send a symbol description request.
 ---@param symbol string
----@param pkg string
 ---@param cb OozeRpcCallback?
-function M.describe(symbol, pkg, cb)
+function M.describe(symbol, cb)
 	_request({
 		op = "describe",
 		symbol = symbol,
-		package = pkg or "nil",
 	}, cb)
 end
 
