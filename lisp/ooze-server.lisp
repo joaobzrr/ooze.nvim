@@ -67,8 +67,12 @@
                      (response-msg
                        (format nil "~6,'0X~a"
                                (length response-json)
-                               response-json)))
-                (write-sequence response-msg stream)
+                               response-json))
+                     (octets
+                       (flexi:string-to-octets
+                        response-msg
+                        :external-format :utf-8)))
+                (write-sequence octets stream)
                 (finish-output stream))))))
     (error (c)
       (format *error-output*
