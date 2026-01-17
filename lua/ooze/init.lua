@@ -10,6 +10,7 @@ local M = { opts = {} }
 ---@return string[]
 local function format_result_lines(result)
 	local lines = {}
+
 	if result.stdout and result.stdout ~= "" then
 		for _, l in ipairs(vim.split(result.stdout, "\n")) do
 			if l ~= "" then
@@ -17,11 +18,22 @@ local function format_result_lines(result)
 			end
 		end
 	end
+
 	if result.ok then
 		table.insert(lines, ";; " .. (result.value or "nil"))
 	else
-		table.insert(lines, ";; ERROR: " .. (result.err or "Unknown"))
+		local err = result.err or "Unknown"
+		local err_lines = vim.split(err, "\n")
+
+		for i, l in ipairs(err_lines) do
+			if i == 1 then
+				table.insert(lines, ";; ERROR: " .. l)
+			else
+				table.insert(lines, ";; " .. l)
+			end
+		end
 	end
+
 	return lines
 end
 
@@ -29,29 +41,36 @@ end
 ---@param opts? Ooze.EvalOpts
 function M.eval(sexps, opts)
 	opts = opts or {}
-	local list = type(sexps) == "string" and { sexps } or sexps
-	if not list or #list == 0 then
+
+	if type(sexps) == "string" then
+		sexps = { sexps }
+	end
+
+	if not sexps or #sexps == 0 then
 		return
 	end
+
+	repl.add_to_history(sexps)
 
 	if not repl.is_open() then
 		repl.open()
 	end
 
-	rpc.eval(list, function(res)
+	rpc.eval(sexps, function(res)
 		if not res or not res.results then
 			repl.append({ ";; ERROR: No response from server" })
 			return
 		end
 
 		local output = {}
-		for i, code in ipairs(list) do
+		for i, code in ipairs(sexps) do
 			if not opts.silent then
 				local code_lines = vim.split(code, "\n")
 				for j, line in ipairs(code_lines) do
 					table.insert(output, (j == 1 and "OOZE> " or "      ") .. line)
 				end
 			end
+
 			vim.list_extend(output, format_result_lines(res.results[i]))
 		end
 		repl.append(output)
@@ -65,15 +84,24 @@ function M.setup(opts)
 end
 
 function M.eval_enclosing_sexp_at_cursor()
-	M.eval(ts.get_enclosing_sexp_at_cursor())
+	local sexp = ts.get_enclosing_sexp_at_cursor()
+	if sexp then
+		M.eval(sexp)
+	end
 end
 
 function M.eval_outermost_sexp_at_cursor()
-	M.eval(ts.get_outermost_sexp_at_cursor())
+	local sexp = ts.get_outermost_sexp_at_cursor()
+	if sexp then
+		M.eval(sexp)
+	end
 end
 
 function M.eval_buffer()
-	M.eval(ts.get_toplevel_sexps_in_buffer())
+	local sexps = ts.get_toplevel_sexps_in_buffer()
+	if sexps then
+		M.eval(sexps)
+	end
 end
 
 return M
