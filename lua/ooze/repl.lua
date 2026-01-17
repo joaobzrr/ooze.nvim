@@ -4,10 +4,51 @@ local M = {}
 local state = {
 	buf = nil,
 	win = nil,
-	prompt = "OOZE> ",
+	current_package = "COMMON-LISP-USER",
+	prompt_format = "%s> ",
 	history = {},
 	history_index = 0,
 }
+
+---Updates the internal state and forces the REPL buffer to refresh its prompt.
+---@param pkg_name string
+function M.set_prompt_package(pkg_name)
+	local new_pkg = pkg_name:upper()
+
+	-- We check if the package is actually different OR if the buffer
+	-- hasn't been initialized with a prompt yet.
+	local current_prompt_in_buf = vim.fn.prompt_getprompt(state.buf)
+	if state.current_package == new_pkg and current_prompt_in_buf ~= "" then
+		return
+	end
+
+	state.current_package = new_pkg
+
+	if state.buf and vim.api.nvim_buf_is_valid(state.buf) then
+		local new_prompt = string.format(state.prompt_format, state.current_package)
+
+		-- 1. Tell Neovim what the prompt string is for NEW lines.
+		vim.fn.prompt_setprompt(state.buf, new_prompt)
+
+		-- 2. Force-refresh the CURRENT line.
+		-- In prompt buffers, the last line is the active input line.
+		local last_line_idx = vim.api.nvim_buf_line_count(state.buf) - 1
+
+		-- By setting the last line to an empty string, we trigger the
+		-- prompt buffer to redraw that line using the new prefix immediately.
+		vim.api.nvim_buf_set_lines(state.buf, last_line_idx, -1, false, { "" })
+
+		-- 3. Ensure the cursor is positioned correctly after the redraw.
+		if vim.api.nvim_get_current_buf() == state.buf then
+			vim.cmd("startinsert!")
+		end
+	end
+end
+
+-- Modify the format used in append to use the current state
+function M.get_prompt_string()
+	return string.format(state.prompt_format, state.current_package)
+end
 
 ---Adds a string (or multiple) to the command history.
 ---@param input string | string[]
@@ -53,17 +94,17 @@ function M.append(lines)
 		return
 	end
 	local last_line = vim.api.nvim_buf_line_count(state.buf)
-
 	vim.api.nvim_buf_set_lines(state.buf, last_line - 1, last_line - 1, false, lines)
 	vim.api.nvim_set_option_value("modified", false, { buf = state.buf })
 	if state.win and vim.api.nvim_win_is_valid(state.win) then
-		local new_last_line = vim.api.nvim_buf_line_count(state.buf)
-		vim.api.nvim_win_set_cursor(state.win, { new_last_line, 0 })
+		vim.api.nvim_win_set_cursor(state.win, { vim.api.nvim_buf_line_count(state.buf), 0 })
 	end
 end
 
 function M.clear()
-	if not state.buf or not vim.api.nvim_buf_is_valid(state.buf) then return end
+	if not state.buf or not vim.api.nvim_buf_is_valid(state.buf) then
+		return
+	end
 	-- Prompt buffers require at least one line (the prompt)
 	-- We clear everything and the prompt_setprompt/callback handles the rest
 	vim.api.nvim_buf_set_lines(state.buf, 0, -2, false, {})
@@ -71,7 +112,9 @@ function M.clear()
 end
 
 function M.open()
-	if not state.buf or not vim.api.nvim_buf_is_valid(state.buf) then
+	local is_new = not state.buf or not vim.api.nvim_buf_is_valid(state.buf)
+
+	if is_new then
 		state.buf = vim.api.nvim_create_buf(false, true)
 		vim.api.nvim_buf_set_name(state.buf, "ooze://repl")
 
@@ -80,16 +123,19 @@ function M.open()
 		vim.api.nvim_set_option_value("buflisted", false, { buf = state.buf })
 		vim.api.nvim_set_option_value("filetype", "lisp", { buf = state.buf })
 
-		vim.fn.prompt_setprompt(state.buf, state.prompt)
+		-- Set the initial prompt based on the current local state
+		local initial_prompt = M.get_prompt_string()
+		vim.fn.prompt_setprompt(state.buf, initial_prompt)
+
 		vim.fn.prompt_setcallback(state.buf, function(text)
 			if vim.trim(text) ~= "" then
-				require("ooze").eval(text, { silent = true })
+				-- We do NOT echo here because the text is already visible in the prompt
+				require("ooze").eval(text, { echo = false })
 			end
 			vim.api.nvim_set_option_value("modified", false, { buf = state.buf })
 		end)
 
 		local opts = { buffer = state.buf, silent = true }
-
 		vim.keymap.set("i", "<Up>", function()
 			cycle_history(-1)
 		end, opts)
@@ -104,6 +150,7 @@ function M.open()
 		end, opts)
 	end
 
+	-- Create or jump to the window
 	if not state.win or not vim.api.nvim_win_is_valid(state.win) then
 		vim.cmd("botright 15split")
 		state.win = vim.api.nvim_get_current_win()
@@ -113,9 +160,10 @@ function M.open()
 		vim.api.nvim_set_option_value("number", false, { win = state.win })
 		vim.api.nvim_set_option_value("relativenumber", false, { win = state.win })
 		vim.api.nvim_set_option_value("signcolumn", "no", { win = state.win })
-		-- Ensure scrolling behavior is consistent
 		vim.api.nvim_set_option_value("scrolloff", 0, { win = state.win })
 	end
+
+	require("ooze").sync_state()
 
 	vim.cmd("startinsert")
 end

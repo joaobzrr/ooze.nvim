@@ -10,7 +10,8 @@
 ---@field id integer
 ---@field ok boolean
 ---@field results? Ooze.EvalResult[]
+---@field ["package"]? string
 ---@field err? string
 
 ---@class Ooze.EvalOpts
----@field silent? boolean If true, don't echo the input code in REPL.
+---@field echo? boolean If true, echo the input code in REPL (used for buffer evals).

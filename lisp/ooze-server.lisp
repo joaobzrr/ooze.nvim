@@ -16,29 +16,41 @@
 (defvar *listening-socket* nil)
 (defconstant +header-length+ 6)
 
-(defun eval-form-capturing-output (source)
-  "Evaluates a single string source, returning a result hash-table with correct value/stdout."
+(defun eval-sexp-capturing-output (source)
+"Evaluates a single string source, returning a result hash-table."
   (handler-case
-      (let* ((form (read-from-string source))
+      (let* ((sexp (read-from-string source))
              (eval-result nil)
              (captured-stdout (with-output-to-string (*standard-output*)
-                                (setf eval-result (eval form)))))
+                                (setf eval-result (eval sexp)))))
         (alex:plist-hash-table 
          `("ok" t 
            "value" ,(prin1-to-string eval-result) 
-           "stdout" ,captured-stdout) 
+           "stdout" ,captured-stdout
+           "package" ,(package-name *package*)) 
          :test 'equal))
     (error (c)
-      (alex:plist-hash-table `("ok" nil "err" ,(format nil "~a" c)) :test 'equal))))
+      (alex:plist-hash-table 
+       `("ok" nil 
+         "err" ,(format nil "~a" c)
+         "package" ,(package-name *package*)) 
+       :test 'equal))))
 
 (defun dispatch-op (request)
   "Routes operations to specific handlers."
   (let ((op (gethash "op" request))
         (id (gethash "id" request)))
     (alex:switch (op :test #'string-equal)
+      ("ping" ;; New op to fetch state
+       (alex:plist-hash-table `("id" ,id "ok" t "package" ,(package-name *package*)) :test 'equal))
       ("eval" 
-       (let ((results (map 'list #'eval-form-capturing-output (gethash "code" request))))
-         (alex:plist-hash-table `("id" ,id "ok" t "results" ,results) :test 'equal)))
+       (let ((results (map 'list #'eval-sexp-capturing-output (gethash "code" request))))
+         (alex:plist-hash-table 
+          `("id" ,id 
+            "ok" t 
+            "results" ,results
+            "package" ,(package-name *package*)) ;; We'll keep the key "package"
+          :test 'equal)))
       (t (alex:plist-hash-table `("id" ,id "ok" nil "err" "Unknown op") :test 'equal)))))
 
 (defun send-json (response stream)

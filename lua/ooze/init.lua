@@ -6,6 +6,12 @@ local config = require("ooze.config")
 ---@class Ooze
 local M = { opts = {} }
 
+---@param opts? table
+function M.setup(opts)
+	M.opts = vim.tbl_deep_extend("force", config, opts or {})
+	rpc.connect(M.opts.server.host, M.opts.server.port)
+end
+
 ---@param result Ooze.EvalResult
 ---@return string[]
 local function format_result_lines(result)
@@ -37,21 +43,26 @@ local function format_result_lines(result)
 	return lines
 end
 
+function M.sync_state()
+	rpc.send_request({ op = "ping" }, function(res)
+		if res and res.package then
+			repl.set_prompt_package(res.package)
+		end
+	end)
+end
+
 ---@param sexps (string | string[])?
 ---@param opts? Ooze.EvalOpts
 function M.eval(sexps, opts)
 	opts = opts or {}
-
 	if type(sexps) == "string" then
 		sexps = { sexps }
 	end
-
 	if not sexps or #sexps == 0 then
 		return
 	end
 
 	repl.add_to_history(sexps)
-
 	if not repl.is_open() then
 		repl.open()
 	end
@@ -62,45 +73,45 @@ function M.eval(sexps, opts)
 			return
 		end
 
+		if res.package then
+			repl.set_prompt_package(res.package)
+		end
+
 		local output = {}
 		for i, code in ipairs(sexps) do
-			if not opts.silent then
+			if opts.echo then
 				local code_lines = vim.split(code, "\n")
 				for j, line in ipairs(code_lines) do
-					table.insert(output, (j == 1 and "OOZE> " or "      ") .. line)
+					local prefix = (j == 1 and repl.get_prompt_string() or "      ")
+					table.insert(output, prefix .. line)
 				end
 			end
-
 			vim.list_extend(output, format_result_lines(res.results[i]))
 		end
+
 		repl.append(output)
 	end)
 end
 
----@param opts? table
-function M.setup(opts)
-	M.opts = vim.tbl_deep_extend("force", config, opts or {})
-	rpc.connect(M.opts.server.host, M.opts.server.port)
-end
-
+-- Update the wrapper functions to set 'echo = true'
 function M.eval_enclosing_sexp_at_cursor()
 	local sexp = ts.get_enclosing_sexp_at_cursor()
 	if sexp then
-		M.eval(sexp)
+		M.eval(sexp, { echo = true })
 	end
 end
 
 function M.eval_outermost_sexp_at_cursor()
 	local sexp = ts.get_outermost_sexp_at_cursor()
 	if sexp then
-		M.eval(sexp)
+		M.eval(sexp, { echo = true })
 	end
 end
 
 function M.eval_buffer()
 	local sexps = ts.get_toplevel_sexps_in_buffer()
 	if sexps then
-		M.eval(sexps)
+		M.eval(sexps, { echo = true })
 	end
 end
 

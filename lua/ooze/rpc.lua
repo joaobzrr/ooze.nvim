@@ -15,7 +15,7 @@ local state = {
 
 ---@param data table
 ---@param cb fun(res: Ooze.RpcResponse)?
-local function send_request(data, cb)
+function M.send_request(data, cb)
 	if not state.client or state.client:is_closing() then
 		if cb then
 			cb({ id = -1, ok = false, err = "Disconnected" })
@@ -80,7 +80,8 @@ end
 ---@param sexps string[]
 ---@param cb fun(res: Ooze.RpcResponse)
 function M.eval(sexps, cb)
-	send_request({ op = "eval", code = sexps }, cb)
+	-- Update this to use the now-exported function
+	M.send_request({ op = "eval", code = sexps }, cb)
 end
 
 return M
