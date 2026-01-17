@@ -62,6 +62,14 @@ function M.append(lines)
 	end
 end
 
+function M.clear()
+	if not state.buf or not vim.api.nvim_buf_is_valid(state.buf) then return end
+	-- Prompt buffers require at least one line (the prompt)
+	-- We clear everything and the prompt_setprompt/callback handles the rest
+	vim.api.nvim_buf_set_lines(state.buf, 0, -2, false, {})
+	vim.api.nvim_set_option_value("modified", false, { buf = state.buf })
+end
+
 function M.open()
 	if not state.buf or not vim.api.nvim_buf_is_valid(state.buf) then
 		state.buf = vim.api.nvim_create_buf(false, true)
@@ -110,6 +118,21 @@ function M.open()
 	end
 
 	vim.cmd("startinsert")
+end
+
+function M.close()
+	if state.win and vim.api.nvim_win_is_valid(state.win) then
+		vim.api.nvim_win_close(state.win, true)
+		state.win = nil
+	end
+end
+
+function M.toggle()
+	if M.is_open() then
+		M.close()
+	else
+		M.open()
+	end
 end
 
 ---@return boolean

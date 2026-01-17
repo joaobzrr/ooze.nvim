@@ -68,18 +68,24 @@
 (defun run-server-loop (host port)
   (setf *listening-socket* (us:socket-listen host port :reuse-address t))
   (format t "Ooze listening on ~a:~a~%" host port)
-  (loop (let ((client (us:socket-accept *listening-socket* :element-type 'flexi:octet)))
+  (handler-case
+      (loop
+        (let ((client (us:socket-accept *listening-socket* :element-type 'flexi:octet)))
           (when client
-            (bt:make-thread (lambda () (handle-client client)) :name "Ooze Worker")))))
+            (bt:make-thread (lambda () (handle-client client)) :name "Ooze Worker"))))
+    (error () (format t "Server loop shutting down.~%"))))
 
 (defun start-server (&key (host "127.0.0.1") (port 4005))
   (unless (and *server-thread* (bt:thread-alive-p *server-thread*))
     (setf *server-thread* (bt:make-thread (lambda () (run-server-loop host port)) :name "Ooze Main"))))
 
 (defun stop-server ()
-  (when *listening-socket* (us:socket-close *listening-socket*) 
-    (setf *listening-socket* nil))
-  (setf *server-thread* nil))
+  (let ((sock *listening-socket*))
+    (setf *listening-socket* nil)
+    (when sock (us:socket-close sock)))
+  (when (and *server-thread* (bt:thread-alive-p *server-thread*))
+    (bt:destroy-thread *server-thread*)
+    (setf *server-thread* nil)))
 
 (defun parse-cli-args (args)
   (let ((host nil)
