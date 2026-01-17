@@ -16,6 +16,8 @@ function M.append(lines)
 	local row = vim.api.nvim_buf_line_count(state.buf)
 	vim.api.nvim_buf_set_lines(state.buf, row - 1, row - 1, false, lines)
 
+    vim.api.nvim_set_option_value("modified", false, { buf = state.buf })
+
 	if state.win and vim.api.nvim_win_is_valid(state.win) then
 		vim.api.nvim_win_set_cursor(state.win, { vim.api.nvim_buf_line_count(state.buf), 0 })
 	end
@@ -29,6 +31,7 @@ function M.open()
 		vim.api.nvim_set_option_value("bufhidden", "hide", { buf = state.buf })
 		vim.api.nvim_set_option_value("swapfile", false, { buf = state.buf })
 		vim.api.nvim_set_option_value("buflisted", false, { buf = state.buf })
+        vim.api.nvim_set_option_value("modified", false, { buf = state.buf })
 		vim.api.nvim_set_option_value("filetype", "lisp", { buf = state.buf })
 		vim.fn.prompt_setprompt(state.buf, state.prompt)
 		vim.fn.prompt_setcallback(state.buf, function(text)
@@ -42,8 +45,6 @@ function M.open()
 		vim.cmd("botright 15split")
 		state.win = vim.api.nvim_get_current_win()
 		vim.api.nvim_win_set_buf(state.win, state.buf)
-
-		-- Local window settings for a cleaner REPL look
 		vim.api.nvim_set_option_value("number", false, { win = state.win })
 		vim.api.nvim_set_option_value("relativenumber", false, { win = state.win })
 		vim.api.nvim_set_option_value("signcolumn", "no", { win = state.win })
