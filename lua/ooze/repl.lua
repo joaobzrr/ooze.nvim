@@ -114,15 +114,26 @@ local function setup_buffer_protection(buf)
 
 	-- Input protections
 	vim.keymap.set("i", "<CR>", submit, opts)
+
 	vim.keymap.set("i", "<C-p>", function()
 		navigate_history(-1)
 	end, opts)
+
 	vim.keymap.set("i", "<C-n>", function()
 		navigate_history(1)
 	end, opts)
+
 	vim.keymap.set("i", "<BS>", function()
 		return vim.api.nvim_win_get_cursor(0)[2] <= get_prompt_len() and "" or "<BS>"
 	end, { buffer = buf, expr = true })
+
+	vim.keymap.set("i", "<C-u>", function()
+		local cursor = vim.api.nvim_win_get_cursor(0)
+		local plen = get_prompt_len()
+		if cursor[2] > plen then
+			vim.api.nvim_buf_set_text(buf, cursor[1] - 1, plen, cursor[1] - 1, cursor[2], {})
+		end
+	end, opts)
 
 	-- Command locks
 	for _, k in ipairs({ "dd", "cc", "S", "D", "C", "x", "X", "p", "P", "<Del>", "r", "R" }) do

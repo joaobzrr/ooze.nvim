@@ -16,8 +16,6 @@
 (defvar *server-thread* nil)
 (defvar *listening-socket* nil)
 
-;; --- Core Logic ---
-
 (defun capture-eval (source)
   (handler-case
       (let* ((sexp (read-from-string source))
@@ -45,8 +43,6 @@
          (make-envelope `("id" ,id "ok" t "results" ,results))))
       (t (make-envelope `("id" ,id "ok" nil "err" "Unknown op"))))))
 
-;; --- Networking ---
-
 (defun read-u8-string (stream length)
   (let ((buf (make-array length :element-type '(unsigned-byte 8))))
     (unless (= (read-sequence buf stream) length) (error 'end-of-file))
@@ -69,8 +65,6 @@
       (end-of-file ())
       (error (c) (format *error-output* "Worker error: ~a~%" c)))
     (ignore-errors (us:socket-close socket))))
-
-;; --- Lifecycle ---
 
 (defun start-server (&key (host "127.0.0.1") (port 4005))
   (when (and *server-thread* (bt:thread-alive-p *server-thread*))
