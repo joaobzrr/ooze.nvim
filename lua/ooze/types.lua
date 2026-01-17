@@ -14,4 +14,21 @@
 ---@field err? string
 
 ---@class Ooze.EvalOpts
----@field echo? boolean If true, echo the input code in REPL (used for buffer evals).
+---@field echo? boolean
+
+---@class Ooze.ConfigServer
+---@field host string
+---@field port integer
+
+---@class Ooze.Config
+---@field server Ooze.ConfigServer
+
+---@class Ooze.ReplState
+---@field buf integer|nil
+---@field win integer|nil
+---@field current_package string
+---@field prompt_format string
+---@field history string[]
+---@field history_index integer
+
+return {}

@@ -6,14 +6,8 @@ vim.g.loaded_ooze = true
 local ooze = require("ooze")
 local repl = require("ooze.repl")
 
-local cmds = {
-	OozeEvalEnclosingSexp = ooze.eval_enclosing_sexp_at_cursor,
-	OozeEvalOutermostSexp = ooze.eval_outermost_sexp_at_cursor,
-	OozeEvalBuffer = ooze.eval_buffer,
-	OozeReplToggle = repl.toggle, -- Changed to toggle
-	OozeReplClear = repl.clear, -- Added clear
-}
-
-for name, fn in pairs(cmds) do
-	vim.api.nvim_create_user_command(name, fn, {})
-end
+vim.api.nvim_create_user_command("OozeEvalEnclosing", ooze.eval_enclosing, {})
+vim.api.nvim_create_user_command("OozeEvalOutermost", ooze.eval_outermost, {})
+vim.api.nvim_create_user_command("OozeEvalBuffer", ooze.eval_buffer, {})
+vim.api.nvim_create_user_command("OozeReplToggle", repl.toggle, {})
+vim.api.nvim_create_user_command("OozeReplClear", repl.clear, {})

@@ -4,116 +4,102 @@
   (:use #:cl)
   (:export #:start-server #:stop-server #:main)
   (:local-nicknames
-    (#:us :usocket)
-    (#:bt :bordeaux-threads)
-    (#:jzon :com.inuoe.jzon)
-    (#:flexi :flexi-streams)
-    (#:alex :alexandria)))
+   (#:us :usocket)
+   (#:bt :bordeaux-threads)
+   (#:jzon :com.inuoe.jzon)
+   (#:flexi :flexi-streams)
+   (#:alex :alexandria)))
 
 (in-package #:ooze-server)
 
+(defconstant +header-length+ 6)
 (defvar *server-thread* nil)
 (defvar *listening-socket* nil)
-(defconstant +header-length+ 6)
 
-(defun eval-sexp-capturing-output (source)
-"Evaluates a single string source, returning a result hash-table."
+;; --- Core Logic ---
+
+(defun capture-eval (source)
   (handler-case
       (let* ((sexp (read-from-string source))
              (eval-result nil)
-             (captured-stdout (with-output-to-string (*standard-output*)
-                                (setf eval-result (eval sexp)))))
-        (alex:plist-hash-table 
-         `("ok" t 
-           "value" ,(prin1-to-string eval-result) 
-           "stdout" ,captured-stdout
-           "package" ,(package-name *package*)) 
-         :test 'equal))
+             (stdout (with-output-to-string (*standard-output*)
+                       (setf eval-result (eval sexp)))))
+        (list :|ok| t :|value| (prin1-to-string eval-result) :|stdout| stdout))
     (error (c)
-      (alex:plist-hash-table 
-       `("ok" nil 
-         "err" ,(format nil "~a" c)
-         "package" ,(package-name *package*)) 
-       :test 'equal))))
+      (list :|ok| nil :|err| (format nil "~a" c)))))
 
-(defun dispatch-op (request)
-  "Routes operations to specific handlers."
+(defun make-envelope (payload)
+  (let ((resp (alex:plist-hash-table payload :test 'equal)))
+    (setf (gethash "package" resp) (package-name *package*))
+    resp))
+
+(defun dispatch-request (request)
   (let ((op (gethash "op" request))
         (id (gethash "id" request)))
     (alex:switch (op :test #'string-equal)
-      ("ping" ;; New op to fetch state
-       (alex:plist-hash-table `("id" ,id "ok" t "package" ,(package-name *package*)) :test 'equal))
+      ("ping" (make-envelope `("id" ,id "ok" t)))
       ("eval" 
-       (let ((results (map 'list #'eval-sexp-capturing-output (gethash "code" request))))
-         (alex:plist-hash-table 
-          `("id" ,id 
-            "ok" t 
-            "results" ,results
-            "package" ,(package-name *package*)) ;; We'll keep the key "package"
-          :test 'equal)))
-      (t (alex:plist-hash-table `("id" ,id "ok" nil "err" "Unknown op") :test 'equal)))))
+       (let ((results (map 'list 
+                           (lambda (code) (alex:plist-hash-table (capture-eval code) :test 'equal))
+                           (gethash "code" request))))
+         (make-envelope `("id" ,id "ok" t "results" ,results))))
+      (t (make-envelope `("id" ,id "ok" nil "err" "Unknown op"))))))
 
-(defun send-json (response stream)
-  (let* ((json (jzon:stringify response))
-         (envelope (format nil "~6,'0X~a" (length json) json))
-         (octets (flexi:string-to-octets envelope :external-format :utf-8)))
-    (write-sequence octets stream)
-    (finish-output stream)))
+;; --- Networking ---
+
+(defun read-u8-string (stream length)
+  (let ((buf (make-array length :element-type '(unsigned-byte 8))))
+    (unless (= (read-sequence buf stream) length) (error 'end-of-file))
+    (flexi:octets-to-string buf :external-format :utf-8)))
 
 (defun handle-client (socket)
   (let ((stream (us:socket-stream socket)))
     (handler-case
         (loop
-          (let* ((len-buf (make-array +header-length+ :element-type '(unsigned-byte 8))))
-            (read-sequence len-buf stream)
-            (let* ((len (parse-integer (flexi:octets-to-string len-buf) :radix 16))
-                   (body-buf (make-array len :element-type '(unsigned-byte 8))))
-              (read-sequence body-buf stream)
-              (let* ((body-str (flexi:octets-to-string body-buf))
-                     (request (jzon:parse body-str))
-                     (response (dispatch-op request)))
-                (send-json response stream)))))
-      (end-of-file () (format t "Client closed connection.~%"))
-      (error (c) (format *error-output* "Client error: ~a~%" c)))
-    (us:socket-close socket)))
+          (let* ((header (read-u8-string stream +header-length+))
+                 (len (parse-integer header :radix 16))
+                 (body-str (read-u8-string stream len))
+                 (request (jzon:parse body-str))
+                 (response (dispatch-request request))
+                 (json (jzon:stringify response))
+                 (envelope (format nil "~6,'0X~a" (length json) json))
+                 (octets (flexi:string-to-octets envelope :external-format :utf-8)))
+            (write-sequence octets stream)
+            (finish-output stream)))
+      (end-of-file ())
+      (error (c) (format *error-output* "Worker error: ~a~%" c)))
+    (ignore-errors (us:socket-close socket))))
 
-(defun run-server-loop (host port)
-  (setf *listening-socket* (us:socket-listen host port :reuse-address t))
-  (format t "Ooze listening on ~a:~a~%" host port)
-  (handler-case
-      (loop
-        (let ((client (us:socket-accept *listening-socket* :element-type 'flexi:octet)))
-          (when client
-            (bt:make-thread (lambda () (handle-client client)) :name "Ooze Worker"))))
-    (error () (format t "Server loop shutting down.~%"))))
+;; --- Lifecycle ---
 
 (defun start-server (&key (host "127.0.0.1") (port 4005))
-  (unless (and *server-thread* (bt:thread-alive-p *server-thread*))
-    (setf *server-thread* (bt:make-thread (lambda () (run-server-loop host port)) :name "Ooze Main"))))
+  (when (and *server-thread* (bt:thread-alive-p *server-thread*))
+    (format t "Server is already running.~%")
+    (return-from start-server))
+  (setf *listening-socket* (us:socket-listen host port :reuse-address t))
+  (setf *server-thread* (bt:make-thread 
+         (lambda ()
+           (handler-case
+               (loop for client = (us:socket-accept *listening-socket* :element-type 'flexi:octet)
+                     do (bt:make-thread (lambda () (handle-client client)) :name "Ooze Worker"))
+             (error () (format t "Ooze server loop stopped.~%"))))
+         :name "Ooze Main"))
+  (format t "Ooze server started on ~A:~A~%" host port))
 
 (defun stop-server ()
-  (let ((sock *listening-socket*))
-    (setf *listening-socket* nil)
-    (when sock (us:socket-close sock)))
+  (when *listening-socket*
+    (us:socket-close *listening-socket*)
+    (setf *listening-socket* nil))
   (when (and *server-thread* (bt:thread-alive-p *server-thread*))
     (bt:destroy-thread *server-thread*)
-    (setf *server-thread* nil)))
-
-(defun parse-cli-args (args)
-  (let ((host nil)
-        (port nil)
-        (remaining-args (copy-list args)))
-    (loop while remaining-args
-          for arg = (pop remaining-args)
-          do (cond
-               ((string-equal arg "--host") (setf host (pop remaining-args)))
-               ((string-equal arg "--port")
-                (let ((port-str (pop remaining-args)))
-                  (when port-str (setf port (parse-integer port-str :junk-allowed t)))))))
-    (list :host host :port port)))
+    (setf *server-thread* nil))
+  (format t "Ooze server stopped.~%"))
 
 (defun main ()
-  (let* ((cli-args (parse-cli-args sb-ext:*posix-argv*))
-         (host     (or (getf cli-args :host) "127.0.0.1"))
-         (port     (or (getf cli-args :port) 4005)))
+  "Starts server and keeps REPL alive."
+  (let* ((args sb-ext:*posix-argv*)
+         (host (or (cadr (member "--host" args :test #'string-equal)) "127.0.0.1"))
+         (port (or (alex:when-let ((p-str (cadr (member "--port" args :test #'string-equal))))
+                     (parse-integer p-str :junk-allowed t))
+                   4005)))
     (start-server :host host :port port)))

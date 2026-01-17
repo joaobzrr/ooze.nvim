@@ -1,75 +1,42 @@
 local rpc = require("ooze.rpc")
 local repl = require("ooze.repl")
 local ts = require("ooze.ts")
+local ui = require("ooze.ui")
 local config = require("ooze.config")
 
----@class Ooze
-local M = { opts = {} }
+local M = { opts = config }
 
----@param opts? table
 function M.setup(opts)
-	M.opts = vim.tbl_deep_extend("force", config, opts or {})
+	M.opts = vim.tbl_deep_extend("force", M.opts, opts or {})
 	rpc.connect(M.opts.server.host, M.opts.server.port)
 end
 
----@param result Ooze.EvalResult
----@return string[]
-local function format_result_lines(result)
-	local lines = {}
-
-	if result.stdout and result.stdout ~= "" then
-		for _, l in ipairs(vim.split(result.stdout, "\n")) do
-			if l ~= "" then
-				table.insert(lines, ";; " .. l)
-			end
-		end
-	end
-
-	if result.ok then
-		table.insert(lines, ";; " .. (result.value or "nil"))
-	else
-		local err = result.err or "Unknown"
-		local err_lines = vim.split(err, "\n")
-
-		for i, l in ipairs(err_lines) do
-			if i == 1 then
-				table.insert(lines, ";; ERROR: " .. l)
-			else
-				table.insert(lines, ";; " .. l)
-			end
-		end
-	end
-
-	return lines
-end
-
 function M.sync_state()
-	rpc.send_request({ op = "ping" }, function(res)
-		if res and res.package then
+	rpc.send({ op = "ping" }, function(res)
+		if res.package then
 			repl.set_prompt_package(res.package)
+			vim.schedule(function()
+				vim.cmd("redraw")
+			end)
 		end
 	end)
 end
 
----@param sexps (string | string[])?
----@param opts? Ooze.EvalOpts
 function M.eval(sexps, opts)
 	opts = opts or {}
-	if type(sexps) == "string" then
-		sexps = { sexps }
-	end
-	if not sexps or #sexps == 0 then
+	local code = type(sexps) == "table" and sexps or { sexps }
+	if #code == 0 then
 		return
 	end
 
-	repl.add_to_history(sexps)
+	repl.add_history(code)
 	if not repl.is_open() then
 		repl.open()
 	end
 
-	rpc.eval(sexps, function(res)
-		if not res or not res.results then
-			repl.append({ ";; ERROR: No response from server" })
+	rpc.send({ op = "eval", code = code }, function(res)
+		if not res.ok then
+			repl.append({ ";; RPC ERROR: " .. (res.err or "unknown") })
 			return
 		end
 
@@ -77,42 +44,30 @@ function M.eval(sexps, opts)
 			repl.set_prompt_package(res.package)
 		end
 
-		local output = {}
-		for i, code in ipairs(sexps) do
+		local out = {}
+		local prompt = repl.get_prompt_string()
+		for i, val in ipairs(code) do
 			if opts.echo then
-				local code_lines = vim.split(code, "\n")
-				for j, line in ipairs(code_lines) do
-					local prefix = (j == 1 and repl.get_prompt_string() or "      ")
-					table.insert(output, prefix .. line)
-				end
+				vim.list_extend(out, ui.format_echo(val, prompt))
 			end
-			vim.list_extend(output, format_result_lines(res.results[i]))
+			if res.results and res.results[i] then
+				vim.list_extend(out, ui.format_eval_result(res.results[i]))
+			end
 		end
-
-		repl.append(output)
+		repl.append(out)
 	end)
 end
 
--- Update the wrapper functions to set 'echo = true'
-function M.eval_enclosing_sexp_at_cursor()
-	local sexp = ts.get_enclosing_sexp_at_cursor()
-	if sexp then
-		M.eval(sexp, { echo = true })
-	end
+function M.eval_enclosing()
+	M.eval(ts.get_enclosing() or "", { echo = true })
 end
 
-function M.eval_outermost_sexp_at_cursor()
-	local sexp = ts.get_outermost_sexp_at_cursor()
-	if sexp then
-		M.eval(sexp, { echo = true })
-	end
+function M.eval_outermost()
+	M.eval(ts.get_outermost() or "", { echo = true })
 end
 
 function M.eval_buffer()
-	local sexps = ts.get_toplevel_sexps_in_buffer()
-	if sexps then
-		M.eval(sexps, { echo = true })
-	end
+	M.eval(ts.get_all() or {}, { echo = true })
 end
 
 return M
