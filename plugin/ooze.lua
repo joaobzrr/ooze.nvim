@@ -16,3 +16,7 @@ end, { desc = "Evaluate the outermost Lisp sexp" })
 vim.api.nvim_create_user_command("OozeEvalBuffer", function()
 	ooze.eval_buffer()
 end, { desc = "Evaluate the entire buffer" })
+
+vim.api.nvim_create_user_command("OozeReplToggle", function()
+	require("ooze.repl").toggle()
+end, { desc = "Toggle the Ooze REPL window." })

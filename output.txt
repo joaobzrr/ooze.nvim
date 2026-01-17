@@ -1,0 +1,862 @@
+
+================================================================================
+File: lisp\ooze-server.lisp
+================================================================================
+
+(ql:quickload '("usocket" "bordeaux-threads" "com.inuoe.jzon" "cl-json" "flexi-streams" "alexandria"))
+
+(defpackage #:ooze-server
+  (:use #:cl)
+  (:export #:start-server
+           #:stop-server
+           #:main)
+  (:local-nicknames
+   (#:usocket #:usocket)
+   (#:bt      #:bordeaux-threads)
+   (#:jzon    #:com.inuoe.jzon)
+   (#:flexi   #:flexi-streams)
+   (#:alex    #:alexandria)))
+
+(in-package #:ooze-server)
+
+(defvar *server-thread* nil
+  "Holds the server thread.")
+
+(defvar *listening-socket* nil
+  "Holds the main server listening socket.")
+
+(defun read-bytes (stream count)
+  (let ((buffer (make-array count :element-type '(unsigned-byte 8))))
+    (read-sequence buffer stream)
+    buffer))
+
+(defun process-request (body-str stream)
+  "Decodes a JSON request, evaluates an array of forms, and sends a JSON response."
+  (handler-case
+      (let* ((request (jzon:parse body-str))
+             (id      (gethash "id" request))
+             (op      (gethash "op" request)))
+        (when (and id op)
+          (let ((response
+                  (cond
+                    ((string-equal op "eval")
+                     (let ((code-list (gethash "code" request)))
+                       (handler-case
+                           (let ((results 
+                                   (map 'list
+                                        (lambda (source)
+                                          (handler-case
+                                              (let ((form (read-from-string source))
+                                                    (value nil)
+                                                    (stdout ""))
+                                                (setf stdout
+                                                      (with-output-to-string (*standard-output*)
+                                                        (setf value (eval form))))
+                                                (alex:plist-hash-table
+                                                 `("ok"     t
+                                                   "value"  ,(prin1-to-string value)
+                                                   "stdout" ,stdout)
+                                                 :test 'equal))
+                                            (error (c)
+                                              (alex:plist-hash-table
+                                               `("ok"  nil
+                                                 "err" ,(format nil "~a" c))
+                                               :test 'equal))))
+                                        code-list)))
+                             (alex:plist-hash-table
+                              `("id"      ,id
+                                "ok"      t
+                                "results" ,results)
+                              :test 'equal))
+                         (error (c)
+                           (alex:plist-hash-table
+                            `("id"  ,id
+                              "ok"  nil
+                              "err" ,(format nil "Batch processing error: ~a" c))
+                            :test 'equal)))))
+                    (t
+                     (alex:plist-hash-table
+                      `("id" ,id
+                        "ok"  nil
+                        "err" "Unknown operation")
+                      :test 'equal)))))
+            (when response
+              (let* ((response-json (jzon:stringify response))
+                     (response-msg (format nil "~6,'0X~a"
+                                           (length response-json)
+                                           response-json))
+                     (octets (flexi:string-to-octets
+                              response-msg
+                              :external-format :utf-8)))
+                (write-sequence octets stream)
+                (finish-output stream))))))
+    (error (c)
+      (format *error-output* "Failed to process request: ~a~%" c))))
+
+(defun handle-client (socket)
+  "Handles a single client connection."
+  (unwind-protect
+       (let ((stream (usocket:socket-stream socket)))
+         (handler-case
+             (loop
+               (let* ((len-bytes (read-bytes stream 6))
+                      (len-str
+                        (flexi:octets-to-string
+                         len-bytes
+                         :external-format :utf-8))
+                      (msg-len
+                        (parse-integer len-str :radix 16)))
+                 (let* ((body-bytes (read-bytes stream msg-len))
+                        (body-str
+                          (flexi:octets-to-string
+                           body-bytes
+                           :external-format :utf-8)))
+                   (process-request body-str stream))))
+           (end-of-file ()
+             (format t "Client disconnected.~%")
+             (return-from handle-client))
+           (error (c)
+             (format *error-output*
+                     "Error in client handler: ~a~%"
+                     c)
+             (return-from handle-client))))
+    (usocket:socket-close socket)))
+
+(defun run-server-loop (host port)
+  "Main server loop to listen for and handle connections."
+  (unwind-protect
+       (progn
+         (setf *listening-socket*
+               (usocket:socket-listen host port
+                                      :reuse-address t))
+         (format t "Ooze server listening on ~a:~a~%"
+                 host port)
+         (loop
+           (handler-case
+               (let ((client-socket
+                       (usocket:socket-accept
+                        *listening-socket*
+                        :element-type 'flexi:octet)))
+                 (when client-socket
+                   (bt:make-thread
+                    (lambda ()
+                      (handle-client client-socket))
+                    :name "Ooze Client Handler")))
+             (error (c)
+               (when *listening-socket*
+                 (format *error-output*
+                         "Error in server accept loop: ~a~%"
+                         c))
+               (return-from run-server-loop)))))
+    (when *listening-socket*
+      (usocket:socket-close *listening-socket*)
+      (setf *listening-socket* nil))))
+
+(defun start-server (&key (host "127.0.0.1") (port 4005))
+  "Starts the Ooze server in a new thread."
+  (when (and *server-thread*
+             (bt:thread-alive-p *server-thread*))
+    (format t "Ooze server is already running.~%")
+    (return-from start-server))
+  (setf *server-thread*
+        (bt:make-thread
+         (lambda ()
+           (unwind-protect
+                (handler-case
+                    (run-server-loop host port)
+                  (error (c)
+                    (format *error-output*
+                            "Ooze server error: ~a~%"
+                            c)))
+             ;; Ensure the global is cleared when the thread exits
+             (setf *server-thread* nil)))
+         :name "Ooze Server")))
+
+(defun stop-server ()
+  "Stops the Ooze server thread if it is running."
+  (cond
+    ((and *server-thread*
+          (bt:thread-alive-p *server-thread*))
+     (format t "Stopping Ooze server...~%")
+     (when *listening-socket*
+       (format t "Closing server socket...~%")
+       (usocket:socket-close *listening-socket*)
+       (setf *listening-socket* nil))
+     (bt:join-thread *server-thread*)
+     (setf *server-thread* nil)
+     (format t "Server stopped.~%"))
+    (t
+     (format t "Ooze server is not running.~%"))))
+
+(defun parse-cli-args (args)
+  "Parses command-line arguments for --host and --port."
+  (let ((host nil)
+        (port nil)
+        (remaining-args (copy-list args)))
+    (loop while remaining-args
+          for arg = (pop remaining-args)
+          do (cond
+               ((string-equal arg "--host")
+                (setf host (pop remaining-args)))
+               ((string-equal arg "--port")
+                (let ((port-str (pop remaining-args)))
+                  (when port-str
+                    (setf port
+                          (parse-integer port-str
+                                         :junk-allowed t)))))))
+    (list :host host :port port)))
+
+(defun main ()
+  "The main entry point for running the server from the command line."
+  (let* ((cli-args (parse-cli-args sb-ext:*posix-argv*))
+         (host     (or (getf cli-args :host) "127.0.0.1"))
+         (port     (or (getf cli-args :port) 4005)))
+    (start-server :host host :port port)))
+
+
+
+
+================================================================================
+File: lua\ooze\config.lua
+================================================================================
+
+---@module 'ooze.config'
+
+---@class OozeConfigServer
+---@field host string The host address of the Lisp server.
+---@field port integer The port number of the Lisp server.
+
+---@class OozeConfig
+---@field server OozeConfigServer Server connection settings.
+
+---@type OozeConfig
+local M = {
+	server = {
+		host = "127.0.0.1",
+		port = 4005,
+	},
+
+	-- TODO: Add more configuration options here later,
+	-- such as keymaps, UI settings, etc.
+}
+
+return M
+
+
+
+
+================================================================================
+File: lua\ooze\init.lua
+================================================================================
+
+local rpc = require("ooze.rpc")
+local ts = require("ooze.ts")
+local config = require("ooze.config")
+
+local M = {}
+M.opts = {}
+
+function M.setup(opts)
+	M.opts = vim.tbl_deep_extend("force", config, opts or {})
+	local server_opts = M.opts.server
+	if server_opts and server_opts.host and server_opts.port then
+		rpc.connect(server_opts.host, server_opts.port, function()
+			vim.notify("Ooze: Connected to Lisp server.", vim.log.levels.INFO)
+		end)
+	end
+end
+
+---@private
+---Formats and displays a server response in the REPL window.
+---@param forms string[] The original forms sent to the server.
+---@param res OozeRpcResponse The response table from the RPC layer.
+local function display_in_repl(forms, res)
+	local repl = require("ooze.repl")
+	if not repl.is_open() then
+		repl.open()
+	end
+
+	if not res or not res.results then
+		repl.append_output(";; ERROR: No response from server.")
+		return
+	end
+
+	for i, code in ipairs(forms) do
+		-- 1. Show the code being evaluated
+		local code_lines = vim.split(code, "\n")
+		for j, line in ipairs(code_lines) do
+			repl.append_output((j == 1 and "OOZE> " or "      ") .. line)
+		end
+
+		-- 2. Show the paired result from the results array
+		local result = res.results[i]
+		if result then
+			-- Append stdout (commented)
+			if result.stdout and result.stdout ~= "" then
+				local lines = vim.split(result.stdout, "\n")
+				for _, line in ipairs(lines) do
+					if line ~= "" then
+						repl.append_output(";; " .. line)
+					end
+				end
+			end
+			-- Append value or error (commented)
+			if result.ok then
+				repl.append_output(";; " .. result.value)
+			else
+				local err_lines = vim.split(result.err, "\n")
+				for _, line in ipairs(err_lines) do
+					repl.append_output(";; ERROR: " .. line)
+				end
+			end
+		end
+	end
+end
+
+function M.eval(sexps)
+	if not sexps then
+		return
+	end
+
+	local sexps_list = type(sexps) == "string" and { sexps } or sexps
+    if #sexps_list == 0 then return end
+
+	rpc.eval(sexps_list, function(res)
+		display_in_repl(sexps_list, res)
+	end)
+end
+
+function M.eval_enclosing_sexp_at_cursor()
+	M.eval(ts.get_enclosing_sexp_at_cursor())
+end
+
+function M.eval_outermost_sexp_at_cursor()
+	M.eval(ts.get_outermost_sexp_at_cursor())
+end
+
+function M.eval_buffer()
+	M.eval(ts.get_toplevel_sexps_in_buffer())
+end
+
+function M.open_repl()
+	require("ooze.repl").open()
+end
+
+return M
+
+
+
+
+================================================================================
+File: lua\ooze\repl.lua
+================================================================================
+
+---@module 'ooze.repl'
+
+local rpc = require("ooze.rpc")
+
+local M = {}
+
+---@class OozeReplState
+---@field buf? integer The buffer handle for the REPL.
+---@field win? integer The window handle for the REPL.
+---@field prompt string The string displayed at the prompt.
+---@field history string[] A list of commands entered by the user.
+---@field history_idx integer The current position in the history for navigation.
+local state = {
+	buf = nil,
+	win = nil,
+	prompt = "OOZE> ",
+	history = {},
+	history_idx = 0,
+}
+
+---@private
+---Creates and configures the REPL buffer.
+---@return integer buf The buffer handle.
+local function create_buffer()
+	local buf = vim.api.nvim_create_buf(false, true)
+	vim.api.nvim_buf_set_name(buf, "ooze://repl")
+	vim.api.nvim_set_option_value("buftype", "prompt", { buf = buf })
+	vim.api.nvim_set_option_value("buflisted", false, { buf = buf })
+	vim.api.nvim_set_option_value("swapfile", false, { buf = buf })
+	vim.api.nvim_set_option_value("filetype", "lisp", { buf = buf })
+	vim.fn.prompt_setprompt(buf, state.prompt)
+	vim.fn.prompt_setcallback(buf, 'v:lua.require("ooze.repl").on_enter')
+	return buf
+end
+
+---@private
+---Appends lines of text to the REPL buffer safely.
+---@param text string|string[] The text to append.
+function M.append_output(text)
+	if not state.buf or not vim.api.nvim_buf_is_valid(state.buf) then
+		return
+	end
+
+	local lines = type(text) == "table" and text or vim.split(tostring(text), "\n")
+
+	local last_line = vim.api.nvim_buf_line_count(state.buf)
+	vim.fn.appendbufline(state.buf, last_line - 1, lines)
+
+	-- Auto-scroll to the bottom
+	if state.win and vim.api.nvim_win_is_valid(state.win) then
+		local new_last = vim.api.nvim_buf_line_count(state.buf)
+		vim.api.nvim_win_set_cursor(state.win, { new_last, 0 })
+	end
+
+	-- Reset the modified flag that gets set when we add text.
+	vim.schedule(function()
+		if state.buf and vim.api.nvim_buf_is_valid(state.buf) then
+			vim.api.nvim_set_option_value("modified", false, { buf = state.buf })
+		end
+	end)
+end
+
+---The callback executed when the user presses Enter in the REPL.
+---This function is public because it must be accessible via `v:lua`.
+---@param text string The text entered by the user.
+function M.on_enter(text)
+	if text == "" then
+		return
+	end
+
+	table.insert(state.history, text)
+	state.history_idx = #state.history + 1
+
+	-- We send the single line from the REPL as an array of one form
+	rpc.eval({ text }, function(res)
+		if not res or not res.results or #res.results == 0 then
+			M.append_output(";; ERROR: No response from server.")
+			return
+		end
+
+		local result = res.results[1]
+
+		-- Append stdout
+		if result.stdout and result.stdout ~= "" then
+			for _, line in ipairs(vim.split(result.stdout, "\n")) do
+				if line ~= "" then
+					M.append_output(";; " .. line)
+				end
+			end
+		end
+
+		-- Append value or error
+		if result.ok then
+			M.append_output(";; " .. result.value)
+		else
+			-- Ensure every line of a multi-line error is commented
+			for _, line in ipairs(vim.split(result.err, "\n")) do
+				M.append_output(";; ERROR: " .. line)
+			end
+		end
+	end)
+end
+
+---Opens the REPL window.
+function M.open()
+	if not state.buf or not vim.api.nvim_buf_is_valid(state.buf) then
+		state.buf = create_buffer()
+	end
+	if state.win and vim.api.nvim_win_is_valid(state.win) then
+		vim.api.nvim_set_current_win(state.win)
+		return
+	end
+
+	vim.cmd("botright 15split")
+	state.win = vim.api.nvim_get_current_win()
+	vim.api.nvim_win_set_buf(state.win, state.buf)
+	vim.api.nvim_set_option_value("winfixheight", true, { win = state.win })
+	vim.api.nvim_set_option_value("wrap", false, { win = state.win })
+
+	local last_line = vim.api.nvim_buf_line_count(state.buf)
+	vim.api.nvim_win_set_cursor(state.win, { last_line, #state.prompt + 1 })
+	vim.cmd("startinsert")
+end
+
+---Closes the REPL window.
+function M.close()
+	if state.win and vim.api.nvim_win_is_valid(state.win) then
+		vim.api.nvim_win_close(state.win, true)
+		state.win = nil
+	end
+end
+
+---Toggles the visibility of the REPL window.
+function M.toggle()
+	if M.is_open() then
+		M.close()
+	else
+		M.open()
+	end
+end
+
+---Returns true if the REPL window is currently open and valid.
+---@return boolean?
+function M.is_open()
+	return state.win and vim.api.nvim_win_is_valid(state.win)
+end
+
+return M
+
+
+
+
+================================================================================
+File: lua\ooze\rpc.lua
+================================================================================
+
+---@module 'ooze.rpc'
+
+local struct = require("ooze.struct")
+local uv = vim.uv
+
+local M = {}
+
+---@alias OozeRpcPrimitive string|number|boolean|nil
+---@alias OozeRpcValue OozeRpcPrimitive|table<string, OozeRpcValue>
+
+---@class OozeRpcRequest
+---@field id? integer
+---@field op string
+---@field code? string[]
+---@field symbol? string
+---@field package? string
+---@field [string] OozeRpcValue
+
+---@class OozeRpcResponse
+---@field id integer
+---@field err? string
+---@field [string] OozeRpcValue
+
+---@alias OozeRpcCallback fun(response: OozeRpcResponse): nil
+
+---@class OozeRpcState
+---@field client uv.uv_tcp_t?            -- Active TCP client (nil when disconnected)
+---@field buffer string                  -- Incoming message buffer
+---@field callbacks table<integer, OozeRpcCallback>
+---@field next_id integer
+
+---@type OozeRpcState
+local state = {
+	client = nil,
+	buffer = "",
+	callbacks = {},
+	next_id = 1,
+}
+
+---Send a request if connected.
+---@param data OozeRpcRequest
+---@param cb OozeRpcCallback?
+local function _request(data, cb)
+	if not state.client or state.client:is_closing() then
+		if cb then
+			vim.schedule(function()
+				cb({ err = "Not connected to Lisp server.", id = -1 })
+			end)
+		end
+		return
+	end
+
+	local id = state.next_id
+	state.next_id = id + 1
+
+	if cb then
+		state.callbacks[id] = cb
+	end
+
+	data.id = id
+
+	local message = struct.serialize(data)
+	local wrapped = string.format("%06X%s", #message, message)
+
+	state.client:write(wrapped)
+end
+
+---Connect to the Lisp RPC server.
+---@param host string
+---@param port integer
+---@param on_connect fun()? Optional callback invoked after successful connection
+function M.connect(host, port, on_connect)
+	if state.client and not state.client:is_closing() then
+		return
+	end
+
+	state.client = uv.new_tcp()
+
+	state.client:connect(host, port, function(err)
+		if err then
+			if state.client and not state.client:is_closing() then
+				state.client:close()
+			end
+
+			state.client = nil
+
+			vim.schedule(function()
+				vim.notify("Ooze RPC: Connection failed: " .. tostring(err), vim.log.levels.ERROR)
+			end)
+
+			return
+		end
+
+		if on_connect then
+			vim.schedule(on_connect)
+		end
+
+		state.client:read_start(function(read_err, data)
+			if read_err then
+				vim.schedule(function()
+					vim.notify("Ooze RPC Read Error: " .. tostring(read_err), vim.log.levels.ERROR)
+				end)
+				return
+			end
+
+			if not data then
+				return
+			end
+
+			state.buffer = state.buffer .. data
+
+			while #state.buffer >= 6 do
+				local header = state.buffer:sub(1, 6)
+				local len = tonumber(header, 16)
+
+				if not len then
+					vim.notify("Ooze RPC: Invalid frame length header: " .. vim.inspect(header), vim.log.levels.ERROR)
+
+					state.buffer = ""
+					return
+				end
+
+				if #state.buffer < 6 + len then
+					-- incomplete frame, wait for more data
+					return
+				end
+
+				local body = state.buffer:sub(7, 6 + len)
+				state.buffer = state.buffer:sub(6 + len + 1)
+
+				body = body:match("^%s*(.-)%s*$") or ""
+
+				local ok, parsed = pcall(struct.parse, body)
+				if not ok then
+					vim.notify("Ooze RPC: Failed to parse JSON body", vim.log.levels.ERROR)
+					break
+				end
+
+				local cb = state.callbacks[parsed.id]
+				if cb then
+					state.callbacks[parsed.id] = nil
+					vim.schedule(function()
+						cb(parsed)
+					end)
+				else
+					vim.notify("Ooze RPC: Response for unknown request id " .. parsed.id, vim.log.levels.WARN)
+				end
+			end
+		end)
+	end)
+end
+
+---Send an evaluation request.
+---@param sexps string[]
+---@param cb OozeRpcCallback?
+function M.eval(sexps, cb)
+	_request({
+		op = "eval",
+		code = sexps,
+	}, cb)
+end
+
+---Send a symbol description request.
+---@param symbol string
+---@param cb OozeRpcCallback?
+function M.describe(symbol, cb)
+	_request({
+		op = "describe",
+		symbol = symbol,
+	}, cb)
+end
+
+---Disconnect from the Lisp RPC server.
+function M.disconnect()
+	if not state.client or state.client:is_closing() then
+		return
+	end
+
+	state.client:close()
+	state.client = nil
+
+	for id, cb in pairs(state.callbacks) do
+		vim.schedule(function()
+			cb({ err = "Disconnected.", id = id })
+		end)
+	end
+
+	state.buffer = ""
+	state.callbacks = {}
+	state.next_id = 1
+
+	vim.notify("Ooze RPC: Disconnected.", vim.log.levels.INFO)
+end
+
+return M
+
+
+
+
+================================================================================
+File: lua\ooze\struct.lua
+================================================================================
+
+---@module 'ooze.struct'
+local M = {}
+
+---Parses a JSON string into a Lua table.
+---@param body string The JSON string to parse.
+---@return table result
+function M.parse(body)
+	-- The pcall has been moved to the caller in rpc.lua.
+	-- This function now directly returns the decoded table, or errors.
+	return vim.json.decode(body)
+end
+
+---Serializes a Lua table into a JSON string.
+---@param tbl table The Lua table to serialize.
+---@return string? json_string
+function M.serialize(tbl)
+	return vim.json.encode(tbl)
+end
+
+return M
+
+
+
+
+================================================================================
+File: lua\ooze\ts.lua
+================================================================================
+
+---@module 'ooze.ts'
+---@class OozeTs
+local M = {}
+
+---@private
+---@param predicate fun(node: TSNode): boolean
+---@return TSNode?
+local function find_sexp_from_cursor(predicate)
+    local buf = vim.api.nvim_get_current_buf()
+    local cursor = vim.api.nvim_win_get_cursor(0)
+    local row = cursor[1] - 1
+    local col = cursor[2]
+
+    local parser = vim.treesitter.get_parser(buf)
+    if not parser then
+        return nil
+    end
+
+    local tree = parser:parse()[1]
+    if not tree then
+        return nil
+    end
+
+    local root = tree:root()
+    if not root then
+        return nil
+    end
+
+    local node = root:named_descendant_for_range(row, col, row, col + 1)
+    if not node then
+        return nil
+    end
+
+    local last_match = nil
+
+    while node do
+        if predicate(node) then
+            last_match = node
+            break
+        end
+        node = node:parent()
+    end
+
+    return last_match
+end
+
+--- Finds the nearest enclosing form.
+---@return string? The text of the form, or nil if not found.
+function M.get_enclosing_sexp_at_cursor()
+    local node = find_sexp_from_cursor(function(n)
+        return n:type() == "list_lit"
+    end)
+
+    return node and vim.treesitter.get_node_text(node, 0) or nil
+end
+
+--- Finds the outermost Lisp form containing the cursor.
+---@return string?
+function M.get_outermost_sexp_at_cursor()
+    local node = find_sexp_from_cursor(function(n)
+        local parent = n:parent()
+        return parent ~= nil and parent:type() == "source"
+    end)
+
+    return node and vim.treesitter.get_node_text(node, 0) or nil
+end
+
+---@return string[]?
+function M.get_all_sexps_in_buffer()
+    local buf = vim.api.nvim_get_current_buf()
+
+    local parser = vim.treesitter.get_parser(buf)
+    if not parser then
+        return nil
+    end
+
+    local tree = parser:parse()[1]
+
+    local root = tree:root()
+    local sexps = {}
+
+    for node in root:iter_children() do
+        if node:named() then
+            table.insert(sexps, vim.treesitter.get_node_text(node, buf))
+        end
+    end
+    return sexps
+end
+
+return M
+
+
+
+
+================================================================================
+File: plugin\ooze.lua
+================================================================================
+
+if vim.g.loaded_ooze then
+	return
+end
+vim.g.loaded_ooze = true
+
+local ooze = require("ooze")
+
+vim.api.nvim_create_user_command("OozeEvalEnclosingSexp", function()
+	ooze.eval_enclosing_sexp_at_cursor()
+end, { desc = "Evaluate the nearest enclosing Lisp sexp" })
+
+vim.api.nvim_create_user_command("OozeEvalOutermostSexp", function()
+	ooze.eval_outermost_sexp_at_cursor()
+end, { desc = "Evaluate the outermost Lisp sexp" })
+
+vim.api.nvim_create_user_command("OozeEvalBuffer", function()
+	ooze.eval_buffer()
+end, { desc = "Evaluate the entire buffer" })
+
+vim.api.nvim_create_user_command("OozeReplToggle", function()
+	require("ooze.repl").toggle()
+end, { desc = "Toggle the Ooze REPL window." })
+
+

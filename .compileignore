@@ -1,0 +1,9 @@
+.compileignore
+.gitignore
+
+compile_project.py
+output.txt
+
+repl-buffer-implementation.md
+AGENTS.md
+ooze-old

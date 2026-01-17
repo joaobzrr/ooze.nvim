@@ -11,7 +11,7 @@ local M = {}
 ---@class OozeRpcRequest
 ---@field id? integer
 ---@field op string
----@field code? string
+---@field code? string[]
 ---@field symbol? string
 ---@field package? string
 ---@field [string] OozeRpcValue
@@ -151,12 +151,12 @@ function M.connect(host, port, on_connect)
 end
 
 ---Send an evaluation request.
----@param source string
+---@param sexps string[]
 ---@param cb OozeRpcCallback?
-function M.eval(source, cb)
+function M.eval(sexps, cb)
 	_request({
 		op = "eval",
-		code = source,
+		code = sexps,
 	}, cb)
 end
 

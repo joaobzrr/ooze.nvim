@@ -26,7 +26,7 @@
     buffer))
 
 (defun process-request (body-str stream)
-  "Decodes a JSON request, evaluates it, and sends a JSON response."
+  "Decodes a JSON request, evaluates an array of forms, and sends a JSON response."
   (handler-case
       (let* ((request (jzon:parse body-str))
              (id      (gethash "id" request))
@@ -35,31 +35,29 @@
           (let ((response
                   (cond
                     ((string-equal op "eval")
-                     (let ((source (gethash "code" request)))
+                     (let ((code-list (gethash "code" request)))
                        (handler-case
-                           (let ((results '()))
-                             (with-input-from-string (s source)
-                               (loop
-                                 (handler-case
-                                     (let ((form (read s nil 'eof)))
-                                       (when (eq form 'eof) (return))
-                                       (let (value form-stdout)
-                                         (setf form-stdout
-                                               (with-output-to-string (*standard-output*)
-                                                 (setf value (eval form))))
-                                         (push (alex:plist-hash-table
-                                                `("ok"     t
-                                                  "value"  ,(prin1-to-string value)
-                                                  "stdout" ,form-stdout)
-                                                :test 'equal)
-                                               results)))
-                                   (error (c)
-                                     (push (alex:plist-hash-table
-                                            `("ok"  nil  ;; nil = JSON false in jzon
-                                              "err" ,(format nil "Evaluation error: ~a" c))
-                                            :test 'equal)
-                                           results)))))
-                             (setq results (nreverse results))
+                           (let ((results 
+                                   (map 'list
+                                        (lambda (source)
+                                          (handler-case
+                                              (let ((form (read-from-string source))
+                                                    (value nil)
+                                                    (stdout ""))
+                                                (setf stdout
+                                                      (with-output-to-string (*standard-output*)
+                                                        (setf value (eval form))))
+                                                (alex:plist-hash-table
+                                                 `("ok"     t
+                                                   "value"  ,(prin1-to-string value)
+                                                   "stdout" ,stdout)
+                                                 :test 'equal))
+                                            (error (c)
+                                              (alex:plist-hash-table
+                                               `("ok"  nil
+                                                 "err" ,(format nil "~a" c))
+                                               :test 'equal))))
+                                        code-list)))
                              (alex:plist-hash-table
                               `("id"      ,id
                                 "ok"      t
@@ -67,9 +65,9 @@
                               :test 'equal))
                          (error (c)
                            (alex:plist-hash-table
-                            `("id" ,id
+                            `("id"  ,id
                               "ok"  nil
-                              "err" ,(format nil "Evaluation error: ~a" c))
+                              "err" ,(format nil "Batch processing error: ~a" c))
                             :test 'equal)))))
                     (t
                      (alex:plist-hash-table

@@ -2,8 +2,7 @@ local rpc = require("ooze.rpc")
 local ts = require("ooze.ts")
 local config = require("ooze.config")
 
-local M = {}
-M.opts = {}
+local M = { opts = {} }
 
 function M.setup(opts)
 	M.opts = vim.tbl_deep_extend("force", config, opts or {})
@@ -15,48 +14,77 @@ function M.setup(opts)
 	end
 end
 
----Displays evaluation results from the server response
-local function display_results(res)
-	if not res then
-		vim.notify("Ooze: No response from server.", vim.log.levels.ERROR)
+---@private
+---Formats and displays a server response in the REPL window.
+---@param sexps string[] The original sexps sent to the server.
+---@param res OozeRpcResponse The response table from the RPC layer.
+---@param opts table
+local function display_in_repl(sexps, res, opts)
+	local repl = require("ooze.repl")
+	if not repl.is_open() then
+		repl.open()
+	end
+
+	if not res or not res.results then
+		repl.append_output(";; ERROR: No response from server.")
 		return
 	end
 
-	if res.err then
-		vim.notify("Ooze RPC Error: " .. res.err, vim.log.levels.ERROR)
-		return
-	end
-
-	if not res.results or #res.results == 0 then
-		vim.notify("Ooze: No results.", vim.log.levels.WARN)
-		return
-	end
-
-	-- If there's only one result (common case for sexp eval), show it simply
-	if #res.results == 1 then
-		local result = res.results[1]
-		if result.ok then
-			vim.notify("=> " .. result.value, vim.log.levels.INFO)
-		else
-			vim.notify("Error: " .. result.err, vim.log.levels.ERROR)
+	for i, code in ipairs(sexps) do
+		-- 1. Show the code being evaluated
+		if not opts.silent then
+			local code_lines = vim.split(code, "\n")
+			for j, line in ipairs(code_lines) do
+				repl.append_output((j == 1 and "OOZE> " or "      ") .. line)
+			end
 		end
-	else
-		-- Multiple results (for Buffer eval)
-		local lines = { "Buffer Results:" }
-		for i, r in ipairs(res.results) do
-			local status = r.ok and "OK" or "ERR"
-			local val = r.ok and r.value or r.err
-			table.insert(lines, string.format("%d [%s]: %s", i, status, val))
+
+		-- 2. Show the paired result from the results array
+		local result = res.results[i]
+		if result then
+			-- Append stdout (commented)
+			if result.stdout and result.stdout ~= "" then
+				local lines = vim.split(result.stdout, "\n")
+				for _, line in ipairs(lines) do
+					if line ~= "" then
+						repl.append_output(";; " .. line)
+					end
+				end
+			end
+			-- Append value or error (commented)
+			if result.ok then
+				repl.append_output(";; " .. result.value)
+			else
+                local err_lines = vim.split(result.err, "\n")
+                for j, line in ipairs(err_lines) do
+                    if j == 1 then
+                        repl.append_output(";; ERROR: " .. line)
+                    else
+                        repl.append_output(";; " .. line)
+                    end
+                end
+			end
 		end
-		vim.notify(table.concat(lines, "\n"), vim.log.levels.INFO)
 	end
 end
 
-function M.eval(code)
-	if not code or code == "" then
+---@param sexps (string|string[])?
+---@param opts? {silent?: boolean}
+function M.eval(sexps, opts)
+	if not sexps then
 		return
 	end
-	rpc.eval(code, display_results)
+
+	local sexps_list = type(sexps) == "string" and { sexps } or sexps
+	if #sexps_list == 0 then
+		return
+	end
+
+	opts = opts or {}
+
+	rpc.eval(sexps_list, function(res)
+		display_in_repl(sexps_list, res, opts)
+	end)
 end
 
 function M.eval_enclosing_sexp_at_cursor()
@@ -68,8 +96,11 @@ function M.eval_outermost_sexp_at_cursor()
 end
 
 function M.eval_buffer()
-	local lines = vim.api.nvim_buf_get_lines(0, 0, -1, false)
-	M.eval(table.concat(lines, "\n"))
+	M.eval(ts.get_toplevel_sexps_in_buffer())
+end
+
+function M.open_repl()
+	require("ooze.repl").open()
 end
 
 return M
