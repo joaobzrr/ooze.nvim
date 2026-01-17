@@ -24,11 +24,11 @@
 ---@field server Ooze.ConfigServer
 
 ---@class Ooze.ReplState
----@field buf integer|nil
----@field win integer|nil
----@field current_package string
----@field prompt_format string
----@field history string[]
----@field history_index integer
+---@field buf integer? The REPL buffer handle
+---@field win integer? The REPL window handle
+---@field current_package string The current Lisp package
+---@field prompt_format string Format string for the prompt
+---@field history string[] List of submitted commands
+---@field history_index integer Current position in history navigation
 
 return {}

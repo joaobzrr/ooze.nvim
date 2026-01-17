@@ -1,15 +1,7 @@
-local ui = require("ooze.ui")
-
 ---@class Ooze.Repl
 local M = {}
 
 ---@class Ooze.ReplState
----@field buf integer? The REPL buffer handle
----@field win integer? The REPL window handle
----@field current_package string The current Lisp package
----@field prompt_format string Format string for the prompt
----@field history string[] List of submitted commands
----@field history_index integer Current position in history navigation
 local state = {
 	buf = nil,
 	win = nil,
@@ -40,6 +32,26 @@ local function snap_to_prompt()
 	vim.api.nvim_win_set_cursor(state.win, { line_count, #last_line })
 end
 
+---Checks if the cursor is in a "typeable" area. If not, snaps to prompt.
+local function ensure_valid_insertion_point()
+	if not state.win or not vim.api.nvim_win_is_valid(state.win) then
+		return
+	end
+
+	local buf = state.buf --[[@as integer]]
+	local cursor = vim.api.nvim_win_get_cursor(state.win)
+	local line_count = vim.api.nvim_buf_line_count(buf)
+	local plen = get_prompt_len()
+
+	local is_on_last_line = cursor[1] == line_count
+	-- Allow cursor to be AT the prompt length or after it
+	local is_past_prompt = cursor[2] >= plen
+
+	if not (is_on_last_line and is_past_prompt) then
+		snap_to_prompt()
+	end
+end
+
 ---Safely toggles modifiable to update REPL contents
 ---@param fn fun()
 local function modify_buf(fn)
@@ -49,7 +61,6 @@ local function modify_buf(fn)
 	end
 	vim.api.nvim_set_option_value("modifiable", true, { buf = buf })
 	fn()
-	-- Lock if we aren't in active insert mode in this buffer
 	if vim.api.nvim_get_current_buf() ~= buf or vim.fn.mode() ~= "i" then
 		vim.api.nvim_set_option_value("modifiable", false, { buf = buf })
 	end
@@ -67,14 +78,9 @@ local function navigate_history(delta)
 	local content = state.history[state.history_index] or ""
 
 	modify_buf(function()
-		local count = vim.api.nvim_buf_line_count(state.buf --[[@as integer]])
-		vim.api.nvim_buf_set_lines(
-			state.buf --[[@as integer]],
-			count - 1,
-			count,
-			false,
-			{ M.get_prompt_string() .. content }
-		)
+		local buf_id = state.buf --[[@as integer]]
+		local count = vim.api.nvim_buf_line_count(buf_id)
+		vim.api.nvim_buf_set_lines(buf_id, count - 1, count, false, { M.get_prompt_string() .. content })
 		snap_to_prompt()
 	end)
 end
@@ -107,13 +113,14 @@ function M.append(lines)
 	end
 	vim.schedule(function()
 		modify_buf(function()
-			local count = vim.api.nvim_buf_line_count(buf)
+			local buf_id = buf --[[@as integer]]
+			local count = vim.api.nvim_buf_line_count(buf_id)
 			local new_content = {}
 			for _, l in ipairs(lines) do
 				table.insert(new_content, l)
 			end
 			table.insert(new_content, M.get_prompt_string())
-			vim.api.nvim_buf_set_lines(buf, count - 1, count, false, new_content)
+			vim.api.nvim_buf_set_lines(buf_id, count - 1, count, false, new_content)
 		end)
 		snap_to_prompt()
 		vim.cmd("redraw")
@@ -130,8 +137,15 @@ local function setup_buffer_protection(buf)
 	for _, k in ipairs(insert_keys) do
 		vim.keymap.set("n", k, function()
 			vim.api.nvim_set_option_value("modifiable", true, { buf = buf })
-			snap_to_prompt()
-			vim.cmd("startinsert!")
+			ensure_valid_insertion_point()
+
+			-- Logic: 'a' and 'A' should always act as 'append'
+			-- 'i' and others act as 'insert' at current position
+			if k == "a" or k == "A" then
+				vim.cmd("startinsert!")
+			else
+				vim.cmd("startinsert")
+			end
 		end, opts)
 	end
 
@@ -168,13 +182,13 @@ local function setup_buffer_protection(buf)
 		return vim.api.nvim_win_get_cursor(0)[2] < get_prompt_len() and "" or "<Del>"
 	end, { buffer = buf, expr = true })
 
-	-- 3. Locking History
+	-- 3. Locking History (Normal/Visual Mode)
 	local locks = { "dd", "cc", "S", "D", "C", "x", "X", "p", "P", "<Del>", "r", "R" }
 	for _, k in ipairs(locks) do
 		vim.keymap.set({ "n", "v" }, k, function() end, opts)
 	end
 
-	-- 4. Elasticity Autocmds
+	-- 4. Elasticity and Escape Protection
 	local group = vim.api.nvim_create_augroup("OozeReplGuard_" .. buf, { clear = true })
 
 	vim.api.nvim_create_autocmd("InsertLeave", {
@@ -182,6 +196,12 @@ local function setup_buffer_protection(buf)
 		group = group,
 		callback = function()
 			vim.api.nvim_set_option_value("modifiable", false, { buf = buf })
+			local cursor = vim.api.nvim_win_get_cursor(0)
+			local plen = get_prompt_len()
+			-- If the cursor landed BEFORE the prompt on escape, push it to the first valid char
+			if cursor[2] < plen then
+				vim.api.nvim_win_set_cursor(0, { cursor[1], plen })
+			end
 		end,
 	})
 
@@ -204,7 +224,7 @@ function M.open()
 		state.buf = vim.api.nvim_create_buf(false, true)
 		vim.api.nvim_buf_set_name(state.buf, "ooze://repl")
 
-		local buf = state.buf
+		local buf = state.buf --[[@as integer]]
 		local props = {
 			buftype = "nofile",
 			filetype = "lisp",
@@ -233,29 +253,25 @@ function M.open()
 	vim.api.nvim_set_option_value("modifiable", true, {
 		buf = state.buf --[[@as integer]],
 	})
-	snap_to_prompt()
+	ensure_valid_insertion_point()
 	vim.cmd("startinsert!")
 end
 
----Update the prompt based on the current Lisp package
----@param pkg_name string
 function M.set_prompt_package(pkg_name)
 	state.current_package = pkg_name:upper()
 	if state.buf and vim.api.nvim_buf_is_valid(state.buf) then
 		modify_buf(function()
-			local buf = state.buf --[[@as integer]]
-			local count = vim.api.nvim_buf_line_count(buf)
-			local last_line = vim.api.nvim_buf_get_lines(buf, -2, -1, false)[1] or ""
+			local buf_id = state.buf --[[@as integer]]
+			local count = vim.api.nvim_buf_line_count(buf_id)
+			local last_line = vim.api.nvim_buf_get_lines(buf_id, -2, -1, false)[1] or ""
 			local new_prompt = M.get_prompt_string()
 			if last_line:match("^[^>]+> *$") then
-				vim.api.nvim_buf_set_lines(buf, count - 1, count, false, { new_prompt })
+				vim.api.nvim_buf_set_lines(buf_id, count - 1, count, false, { new_prompt })
 			end
 		end)
 	end
 end
 
----Add code to the command history
----@param c string|string[]
 function M.add_history(c)
 	local entries = type(c) == "table" and c or { c }
 	for _, v in ipairs(entries) do
@@ -267,7 +283,6 @@ function M.add_history(c)
 	state.history_index = #state.history + 1
 end
 
----@return boolean
 function M.is_open()
 	return state.win ~= nil and vim.api.nvim_win_is_valid(state.win)
 end
@@ -290,7 +305,8 @@ end
 function M.clear()
 	if state.buf then
 		modify_buf(function()
-			vim.api.nvim_buf_set_lines(state.buf --[[@as integer]], 0, -1, false, { M.get_prompt_string() })
+			local buf_id = state.buf --[[@as integer]]
+			vim.api.nvim_buf_set_lines(buf_id, 0, -1, false, { M.get_prompt_string() })
 		end)
 		snap_to_prompt()
 	end
