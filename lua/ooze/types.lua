@@ -1,5 +1,7 @@
 ---@meta
 
+---@alias Ooze.Position [integer, integer]
+
 ---@class Ooze.EvalResult
 ---@field ok boolean
 ---@field value? string
