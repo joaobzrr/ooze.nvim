@@ -1,103 +1,50 @@
-local uv = vim.uv
-
 local M = {}
 
-local state = {
-	client = nil,
-	buffer = {},
-	callbacks = {},
-	next_id = 1,
-}
+local uv = vim.uv
 
----Check if connected to server
----@return boolean
-function M.is_connected()
-	return state.client ~= nil and not state.client:is_closing()
-end
-
----Connect to Lisp server
+---Connects to a TCP server and sets up read/close handlers.
 ---@param host string
 ---@param port integer
-function M.connect(host, port)
-	if M.is_connected() then
-		return
-	end
-
-	state.client = uv.new_tcp()
-	state.client:connect(host, port, function(err)
+---@param handlers { on_connect: fun(), on_data: fun(data: string), on_close: fun(), on_error: fun(err: string) }
+---@return table client: The TCP client object.
+function M.connect(host, port, handlers)
+	local client = uv.new_tcp()
+	client:connect(host, port, function(err)
 		if err then
-			vim.schedule(function()
-				vim.notify("Ooze: Failed to connect to " .. host .. ":" .. port, vim.log.levels.ERROR)
-			end)
-			state.client = nil
+			handlers.on_error(err)
 			return
 		end
+		if handlers.on_connect then
+			handlers.on_connect()
+		end
 
-		vim.schedule(function()
-			vim.notify("Ooze: Connected to " .. host .. ":" .. port, vim.log.levels.INFO)
-		end)
-
-		state.client:read_start(function(read_err, data)
+		client:read_start(function(read_err, data)
 			if read_err or not data then
+				handlers.on_close()
 				return
 			end
-			table.insert(state.buffer, data)
-			local chunk = table.concat(state.buffer)
-
-			while #chunk >= 6 do
-				local len = tonumber(chunk:sub(1, 6), 16)
-				if not len or #chunk < (6 + len) then
-					break
-				end
-
-				local body = chunk:sub(7, 6 + len)
-				chunk = chunk:sub(6 + len + 1)
-				state.buffer = { chunk } -- Reset buffer with remaining
-
-				local ok, parsed = pcall(vim.json.decode, body)
-				if ok and parsed.id and state.callbacks[parsed.id] then
-					local cb = state.callbacks[parsed.id]
-					state.callbacks[parsed.id] = nil
-					vim.schedule(function()
-						cb(parsed)
-					end)
-				end
-			end
+			handlers.on_data(data)
 		end)
 	end)
+	return client
 end
 
----Disconnect from server
-function M.disconnect()
-	if state.client then
-		if not state.client:is_closing() then
-			state.client:close()
-		end
-		state.client = nil
+---Sends a Lua table over the TCP socket with length-prefixing.
+---@param client table: The TCP client object from connect().
+---@param msg_table table: The Lua table to send.
+function M.send(client, msg_table)
+	if client and not client:is_closing() then
+		local msg = vim.json.encode(msg_table)
+		client:write(string.format("%06X%s", #msg, msg))
 	end
-	state.buffer = {}
-	state.callbacks = {}
-	state.next_id = 1
 end
 
----Send RPC message
----@param data table
----@param cb? function
-function M.send(data, cb)
-	if not M.is_connected() then
-		if cb then
-			cb({ id = -1, ok = false, err = "Disconnected" })
-		end
-		return
+---Closes the TCP client.
+---@param client table: The TCP client object.
+function M.close(client)
+	if client and not client:is_closing() then
+		client:close()
 	end
-	local id = state.next_id
-	state.next_id = id + 1
-	if cb then
-		state.callbacks[id] = cb
-	end
-	data.id = id
-	local msg = vim.json.encode(data)
-	state.client:write(string.format("%06X%s", #msg, msg))
 end
 
 return M

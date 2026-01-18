@@ -9,7 +9,14 @@ local state = {
 	prompt_format = "%s> ",
 	history = {},
 	history_index = 0,
+	on_submit = function() end,
 }
+
+-- New setup function to receive dependencies
+---@param opts { on_submit: fun(code: string) }
+function M.setup(opts)
+	state.on_submit = opts.on_submit or state.on_submit
+end
 
 function M.get_prompt_string()
 	return string.format(state.prompt_format, state.current_package)
@@ -30,15 +37,15 @@ local function get_zone_info()
 	local cursor = vim.api.nvim_win_get_cursor(state.win)
 	local line_count = vim.api.nvim_buf_line_count(state.buf)
 	local min_col = get_min_valid_col()
-	-- Valid if on the last line AND cursor is strictly after the prompt (not on the space)
+
 	return (cursor[1] == line_count and cursor[2] > min_col), cursor[1], cursor[2]
 end
 
 -- Snap cursor to the end of the last line
-local function snap_to_end()
+local function get_zone_end_position()
 	local line_count = vim.api.nvim_buf_line_count(state.buf)
 	local last_line = vim.api.nvim_buf_get_lines(state.buf, -2, -1, false)[1] or ""
-	vim.api.nvim_win_set_cursor(state.win, { line_count, #last_line })
+	return { line_count, #last_line }
 end
 
 local function modify_buf(fn)
@@ -46,9 +53,11 @@ local function modify_buf(fn)
 	if not buf or not vim.api.nvim_buf_is_valid(buf) then
 		return
 	end
+
 	vim.api.nvim_set_option_value("modifiable", true, { buf = buf })
+
 	fn()
-	-- Only lock if we aren't in the middle of typing in the active zone
+
 	if vim.fn.mode() ~= "i" then
 		vim.api.nvim_set_option_value("modifiable", false, { buf = buf })
 	end
@@ -69,25 +78,32 @@ local function navigate_history(delta)
 	end)
 end
 
+local function start_insert_at(pos)
+	vim.cmd("startinsert")
+	vim.api.nvim_win_set_cursor(0, pos)
+end
+
 local function submit()
 	local buf = state.buf
+	if not buf or not vim.api.nvim_buf_is_valid(buf) then
+		return
+	end
+
 	local last_line = vim.api.nvim_buf_get_lines(buf, -2, -1, false)[1] or ""
 	local min_col = get_min_valid_col()
-
-	-- Grab everything AFTER the prompt (including trailing space)
 	local code = last_line:sub(min_col + 1)
 
 	modify_buf(function()
-		-- Add a newline to finalize the entry
-		vim.api.nvim_buf_set_lines(buf, vim.api.nvim_buf_line_count(buf), -1, false, { "" })
+		vim.api.nvim_buf_set_lines(buf, -1, -1, false, { "" })
 	end)
 
 	if vim.trim(code) ~= "" then
-		-- This calls ooze.eval, which will eventually call repl.append
-		require("ooze").eval(code, { echo = false })
+		state.on_submit(code)
 	else
-		M.append({}) -- Just print a new prompt
+		M.append({})
 	end
+
+	vim.api.nvim_win_set_cursor(0, get_zone_end_position())
 end
 
 function M.append(lines)
@@ -95,76 +111,75 @@ function M.append(lines)
 	if not buf or not vim.api.nvim_buf_is_valid(buf) then
 		return
 	end
-	vim.schedule(function()
-		modify_buf(function()
-			local count = vim.api.nvim_buf_line_count(buf)
-			local new_content = vim.list_extend({}, lines)
-			table.insert(new_content, M.get_prompt_string())
-			-- Replace the "dead" prompt line with output + new prompt
-			vim.api.nvim_buf_set_lines(buf, count - 1, count, false, new_content)
-		end)
-		snap_to_end()
-		vim.cmd("redraw")
+
+	modify_buf(function()
+		local count = vim.api.nvim_buf_line_count(buf)
+		local new_content = vim.list_extend({}, lines)
+		table.insert(new_content, M.get_prompt_string())
+		vim.api.nvim_buf_set_lines(buf, count - 1, count, false, new_content)
 	end)
 end
 
-local function setup_buffer_protection(buf)
+local function create_buffer()
+	local buf = vim.api.nvim_create_buf(false, true)
+	state.buf = buf
+
+	vim.api.nvim_buf_set_name(buf, "ooze://repl")
+
+	local buffer_options = { buftype = "nofile", filetype = "lisp", undolevels = -1, modifiable = false }
+	for opt, val in pairs(buffer_options) do
+		vim.api.nvim_set_option_value(opt, val, { buf = buf })
+	end
+
+	modify_buf(function()
+		vim.api.nvim_buf_set_lines(buf, 0, -1, false, { M.get_prompt_string() })
+	end)
+
 	local opts = { buffer = buf, silent = true }
 
-	-- Normal mode entry: Check if resulting insert position will be valid
 	for _, k in ipairs({ "i", "I", "a", "A", "o", "O" }) do
 		vim.keymap.set("n", k, function()
 			vim.api.nvim_set_option_value("modifiable", true, { buf = buf })
 
 			local cursor = vim.api.nvim_win_get_cursor(0)
+			local original_row = cursor[1]
+			local original_col = cursor[2]
+
 			local line_count = vim.api.nvim_buf_line_count(buf)
 			local min_col = get_min_valid_col()
-			local current_col = cursor[2]
+			local current_col = original_col
 
-			-- Calculate what the cursor column will be in insert mode
-			local resulting_col
+			local target_col
+			local valid = original_row == line_count
 			if k == "a" or k == "A" then
-				resulting_col = current_col + 1 -- 'a' moves one position right
+				target_col = current_col + 1
+				valid = valid and target_col >= min_col
 			else
-				resulting_col = current_col -- 'i' stays in place
+				target_col = current_col
+				valid = valid and target_col > min_col
 			end
 
-			-- Check if resulting position will be valid (must be strictly after the prompt)
-			-- We allow cursor to be anywhere from min_col onwards (including past end of line)
-			local will_be_valid = (cursor[1] == line_count and resulting_col > min_col)
-
-			if not will_be_valid then
-				-- Resulting position would be invalid, snap to end
-				snap_to_end()
-				vim.cmd("startinsert!")
+			if not valid then
+				start_insert_at(get_zone_end_position())
 			else
-				-- Resulting position will be valid
-				if k == "a" or k == "A" then
-					-- Move cursor one position right, then enter insert mode
-					vim.api.nvim_win_set_cursor(0, { cursor[1], resulting_col })
-					vim.cmd("startinsert")
-				else
-					-- 'i' stays in place
-					vim.cmd("startinsert")
-				end
+				start_insert_at({ original_row, target_col })
 			end
 		end, opts)
 	end
 
 	vim.keymap.set("i", "<CR>", submit, opts)
 
-	-- Backspace protection: Don't delete the prompt or its trailing space
-	vim.keymap.set("i", "<BS>", function()
-		local _, _, col = get_zone_info()
-		return col <= get_min_valid_col() and "" or "<BS>"
-	end, { buffer = buf, expr = true })
+	for _, key in ipairs({ "<BS>", "<S-BS>", "<C-BS>", "<C-h>" }) do
+		vim.keymap.set("i", key, function()
+			local _, _, col = get_zone_info()
+			return col <= get_min_valid_col() and "" or "<BS>"
+		end, { buffer = buf, expr = true })
+	end
 
-	-- CTRL+U protection: Delete only up to the prompt
 	vim.keymap.set("i", "<C-u>", function()
 		local cursor = vim.api.nvim_win_get_cursor(0)
 		local min_col = get_min_valid_col()
 		if cursor[2] > min_col then
-			-- Delete from min_col to current cursor position
 			vim.api.nvim_buf_set_text(buf, cursor[1] - 1, min_col, cursor[1] - 1, cursor[2], {})
 		end
 	end, opts)
@@ -181,10 +196,9 @@ local function setup_buffer_protection(buf)
 		callback = function()
 			local valid = get_zone_info()
 			if not valid then
-				-- Move to first valid typing position (right after the prompt space)
 				local line_count = vim.api.nvim_buf_line_count(buf)
 				local min_col = get_min_valid_col()
-				vim.api.nvim_win_set_cursor(0, { line_count, min_col + 1 })
+				vim.api.nvim_win_set_cursor(0, { line_count, min_col })
 			end
 			if vim.fn.mode() ~= "i" then
 				vim.api.nvim_set_option_value("modifiable", false, { buf = buf })
@@ -195,16 +209,7 @@ end
 
 function M.open()
 	if not state.buf or not vim.api.nvim_buf_is_valid(state.buf) then
-		state.buf = vim.api.nvim_create_buf(false, true)
-		vim.api.nvim_buf_set_name(state.buf, "ooze://repl")
-		local props = { buftype = "nofile", filetype = "lisp", undolevels = -1, modifiable = false }
-		for opt, val in pairs(props) do
-			vim.api.nvim_set_option_value(opt, val, { buf = state.buf })
-		end
-		modify_buf(function()
-			vim.api.nvim_buf_set_lines(state.buf, 0, -1, false, { M.get_prompt_string() })
-		end)
-		setup_buffer_protection(state.buf)
+		create_buffer()
 	end
 
 	if not state.win or not vim.api.nvim_win_is_valid(state.win) then
@@ -213,9 +218,8 @@ function M.open()
 		vim.api.nvim_win_set_buf(state.win, state.buf --[[@as integer]])
 	end
 
-	require("ooze").sync_state()
 	vim.api.nvim_set_option_value("modifiable", true, { buf = state.buf })
-	snap_to_end()
+
 	vim.cmd("startinsert!")
 end
 
@@ -253,12 +257,16 @@ function M.close()
 	end
 end
 
-function M.toggle()
-	if M.is_open() then
-		M.close()
-	else
-		M.open()
+function M.cleanup()
+	M.close()
+
+	if state.buf and vim.api.nvim_buf_is_valid(state.buf) then
+		vim.api.nvim_buf_delete(state.buf, { force = true })
+		state.buf = nil
 	end
+
+	state.history = {}
+	state.history_index = 0
 end
 
 function M.clear()
@@ -266,7 +274,7 @@ function M.clear()
 		modify_buf(function()
 			vim.api.nvim_buf_set_lines(state.buf, 0, -1, false, { M.get_prompt_string() })
 		end)
-		snap_to_end()
+		--snap_to_end()
 	end
 end
 
