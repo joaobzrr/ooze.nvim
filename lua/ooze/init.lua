@@ -1,17 +1,75 @@
-local rpc = require("ooze.rpc")
-local repl = require("ooze.repl")
-local ts = require("ooze.ts")
-local ui = require("ooze.ui")
-local config = require("ooze.config")
+---@class Ooze
+local M = {}
 
-local M = { opts = config }
+-- Store config separately to persist across reloads
+_G._ooze_config = _G._ooze_config or {}
 
+---@class Ooze.Config
+---@field server { host: string, port: integer }
+local default_config = {
+	server = {
+		host = "127.0.0.1",
+		port = 4005,
+	},
+}
+
+---Setup function called by lazy.nvim
+---@param opts? Ooze.Config
 function M.setup(opts)
-	M.opts = vim.tbl_deep_extend("force", M.opts, opts or {})
-	rpc.connect(M.opts.server.host, M.opts.server.port)
+	-- Merge user config with defaults and store globally
+	_G._ooze_config = vim.tbl_deep_extend("force", default_config, opts or {})
+
+	-- Defer actual initialization until first use
+	-- This allows the plugin to be lazy-loaded
 end
 
+---Get current config (always returns the global config)
+---@return Ooze.Config
+function M.get_config()
+	return _G._ooze_config
+end
+
+---Reload the entire plugin, clearing all state
+function M.reload()
+	-- Close REPL if open
+	local repl = require("ooze.repl")
+	if repl.is_open() then
+		repl.close()
+	end
+
+	-- Disconnect RPC
+	local rpc = require("ooze.rpc")
+	rpc.disconnect()
+
+	-- Clear all ooze modules from package cache
+	for name, _ in pairs(package.loaded) do
+		if name:match("^ooze") then
+			package.loaded[name] = nil
+		end
+	end
+
+	-- Re-require and setup
+	local ooze = require("ooze")
+	ooze.setup(_G._ooze_config)
+
+	vim.notify("Ooze plugin reloaded", vim.log.levels.INFO)
+end
+
+---Connect to server (lazy initialization)
+local function ensure_connected()
+	local rpc = require("ooze.rpc")
+	if not rpc.is_connected() then
+		local config = M.get_config()
+		rpc.connect(config.server.host, config.server.port)
+	end
+end
+
+---Sync package state with server
 function M.sync_state()
+	ensure_connected()
+	local rpc = require("ooze.rpc")
+	local repl = require("ooze.repl")
+
 	rpc.send({ op = "ping" }, function(res)
 		if res.package then
 			repl.set_prompt_package(res.package)
@@ -22,12 +80,21 @@ function M.sync_state()
 	end)
 end
 
+---Evaluate code
+---@param sexps string|string[]
+---@param opts? { echo?: boolean }
 function M.eval(sexps, opts)
+	ensure_connected()
+
 	opts = opts or {}
 	local code = type(sexps) == "table" and sexps or { sexps }
 	if #code == 0 then
 		return
 	end
+
+	local repl = require("ooze.repl")
+	local rpc = require("ooze.rpc")
+	local ui = require("ooze.ui")
 
 	repl.add_history(code)
 	if not repl.is_open() then
@@ -58,16 +125,23 @@ function M.eval(sexps, opts)
 	end)
 end
 
+---Evaluate enclosing s-expression
 function M.eval_enclosing()
+	local ts = require("ooze.ts")
 	M.eval(ts.get_enclosing_sexp() or "", { echo = true })
 end
 
+---Evaluate outermost s-expression
 function M.eval_outermost()
+	local ts = require("ooze.ts")
 	M.eval(ts.get_outermost_sexp() or "", { echo = true })
 end
 
+---Evaluate visual selection
 function M.eval_region()
-	-- 1. Get visual range
+	local ts = require("ooze.ts")
+
+	-- Get visual range
 	local _, sline, scol, _ = unpack(vim.fn.getpos("'<"))
 	local _, eline, ecol, _ = unpack(vim.fn.getpos("'>"))
 
@@ -76,11 +150,9 @@ function M.eval_region()
 		return
 	end
 
-	-- 2. Extract smart forms
-	-- (Subtract 1 for 0-indexed Treesitter rows)
-	local forms = ts.get_smart_selection(sline - 1, scol - 1, eline - 1, ecol)
+	-- Extract smart forms (subtract 1 for 0-indexed Treesitter rows)
+	local forms = ts.get_selected_forms(sline - 1, scol - 1, eline - 1, ecol)
 
-	-- 3. Evaluate each gathered block
 	if #forms > 0 then
 		M.eval(forms, { echo = true })
 	else
@@ -88,7 +160,9 @@ function M.eval_region()
 	end
 end
 
+---Evaluate entire buffer
 function M.eval_buffer()
+	local ts = require("ooze.ts")
 	M.eval(ts.get_all_sexps() or {}, { echo = true })
 end
 

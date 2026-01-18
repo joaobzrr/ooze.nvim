@@ -9,16 +9,34 @@ local state = {
 	next_id = 1,
 }
 
+---Check if connected to server
+---@return boolean
+function M.is_connected()
+	return state.client ~= nil and not state.client:is_closing()
+end
+
+---Connect to Lisp server
+---@param host string
+---@param port integer
 function M.connect(host, port)
-	if state.client then
+	if M.is_connected() then
 		return
 	end
+
 	state.client = uv.new_tcp()
 	state.client:connect(host, port, function(err)
 		if err then
+			vim.schedule(function()
+				vim.notify("Ooze: Failed to connect to " .. host .. ":" .. port, vim.log.levels.ERROR)
+			end)
 			state.client = nil
 			return
 		end
+
+		vim.schedule(function()
+			vim.notify("Ooze: Connected to " .. host .. ":" .. port, vim.log.levels.INFO)
+		end)
+
 		state.client:read_start(function(read_err, data)
 			if read_err or not data then
 				return
@@ -49,8 +67,24 @@ function M.connect(host, port)
 	end)
 end
 
+---Disconnect from server
+function M.disconnect()
+	if state.client then
+		if not state.client:is_closing() then
+			state.client:close()
+		end
+		state.client = nil
+	end
+	state.buffer = {}
+	state.callbacks = {}
+	state.next_id = 1
+end
+
+---Send RPC message
+---@param data table
+---@param cb? function
 function M.send(data, cb)
-	if not state.client or state.client:is_closing() then
+	if not M.is_connected() then
 		if cb then
 			cb({ id = -1, ok = false, err = "Disconnected" })
 		end

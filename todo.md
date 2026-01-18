@@ -1,0 +1,13 @@
+- [x] Keybindings.
+- [ ] Evaluate visually selected region.
+- [ ] Virtual text.
+- [ ] Flash evaluated code.
+- [ ] Documentation.
+- [ ] Load project.
+- [ ] Lazy loading.
+- [ ] Prevent user from executing `(exit)`
+- [ ] Prevent evaluation of non-lisp code.
+- [ ] Completion.
+- [ ] Goto definition.
+- [ ] Alternative ways to visualize and send code to the REPL.
+- [ ] Multiple clients, multiple servers.
