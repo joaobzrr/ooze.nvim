@@ -1,6 +1,8 @@
 ---@class Ooze.Repl
 local M = {}
 
+local dbg = require("core.debug")
+
 ---@type Ooze.ReplState
 local state = {
 	buf = nil,
@@ -150,14 +152,13 @@ local function create_buffer()
 			local current_col = original_col
 
 			local target_col
-			local valid = original_row == line_count
 			if k == "a" or k == "A" then
 				target_col = current_col + 1
-				valid = valid and target_col >= min_col
 			else
 				target_col = current_col
-				valid = valid and target_col > min_col
 			end
+
+			local valid = original_row == line_count and target_col >= min_col
 
 			if not valid then
 				start_insert_at(get_zone_end_position())

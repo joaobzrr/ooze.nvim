@@ -6,7 +6,7 @@ local config = require("ooze.config")
 ---@class Ooze.SessionState
 local state = {
 	client = nil,
-	conn_state = "disconnected", -- disconnected, connecting, connected
+	conn_state = "disconnected",
 	buffer = "",
 	callbacks = {},
 	next_id = 1,

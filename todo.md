@@ -17,5 +17,5 @@
 
 - [x] Not syncing package when we open REPL buffer.
 - [x] Pressing "a" at the start moves cursor to the end.
-- [ ] Pressing "i" at the start moves cursor to the end.
-- [ ] Unable to use `:OozeEvalRegion`. Problem with cb variable.
+- [x] Pressing "i" at the start moves cursor to the end.
+- [x] Unable to use `:OozeEval*` commands.
