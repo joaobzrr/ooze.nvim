@@ -125,8 +125,6 @@ function M.ping(cb)
 end
 
 function M.eval(code, cb)
-	print(string.format("session.eval called. Type of 'cb' is: %s", type(cb)))
-
 	M.send({ op = "eval", code = code }, cb)
 end
 
