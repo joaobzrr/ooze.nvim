@@ -1,8 +1,6 @@
 ---@class Ooze.Repl
 local M = {}
 
-local dbg = require("core.debug")
-
 ---@type Ooze.ReplState
 local state = {
 	buf = nil,
@@ -15,37 +13,43 @@ local state = {
 }
 
 -- Returns the start column of the valid insert range
-local function get_insert_range_start_col()
+local function get_input_start_col()
 	return #M.get_prompt_string()
 end
 
 -- Returns the end column of the valid insert range
-local function get_insert_range_end_col()
+local function get_input_end_col()
 	local last_line = vim.api.nvim_buf_get_lines(state.buf, -2, -1, false)[1] or ""
 	return #last_line
 end
 
 -- Returns the start position of the valid insert range
 ---@return Ooze.Position
-local function get_insert_range_start_position()
+local function get_input_start_position()
 	local last_row = vim.api.nvim_buf_line_count(state.buf)
-	local start_col = get_insert_range_start_col()
+	local start_col = get_input_start_col()
 	return { last_row, start_col }
 end
 
 -- Returns the end position of the valid insert range
 ---@return Ooze.Position
-local function get_insert_range_end_position()
+local function get_input_end_position()
 	local line_count = vim.api.nvim_buf_line_count(state.buf)
-	local end_col = get_insert_range_end_col()
+	local end_col = get_input_end_col()
 	return { line_count, end_col }
 end
 
 ---@param pos Ooze.Position
-local function is_insert_position_valid(pos)
+local function is_editable(pos)
 	local last_row = vim.api.nvim_buf_line_count(state.buf)
-	local start_col = get_insert_range_start_col()
+	local start_col = get_input_start_col()
 	return pos[1] == last_row and pos[2] >= start_col
+end
+
+---@param pos Ooze.Position
+local function start_insert_at(pos)
+	vim.cmd("startinsert")
+	vim.api.nvim_win_set_cursor(0, pos)
 end
 
 ---@param fn fun()
@@ -71,7 +75,7 @@ local function submit()
 	end
 
 	local last_line = vim.api.nvim_buf_get_lines(buf, -2, -1, false)[1] or ""
-	local min_col = get_insert_range_start_col()
+	local min_col = get_input_start_col()
 	local code = last_line:sub(min_col + 1)
 
 	modify_buf(function()
@@ -84,7 +88,7 @@ local function submit()
 		M.append({})
 	end
 
-	vim.api.nvim_win_set_cursor(0, get_insert_range_end_position())
+	vim.api.nvim_win_set_cursor(0, get_input_end_position())
 end
 
 ---@param delta integer
@@ -102,12 +106,6 @@ local function navigate_history(delta)
 		vim.api.nvim_buf_set_lines(buf_id, count - 1, count, false, { new_line })
 		vim.api.nvim_win_set_cursor(0, { count, #new_line })
 	end)
-end
-
----@param pos Ooze.Position
-local function start_insert_at(pos)
-	vim.cmd("startinsert")
-	vim.api.nvim_win_set_cursor(0, pos)
 end
 
 ---@param opts { on_submit: fun(code: string) }
@@ -167,8 +165,8 @@ local function create_buffer()
 				target_col = original_col
 			end
 
-			if not is_insert_position_valid({ last_row, target_col }) then
-				start_insert_at(get_insert_range_end_position())
+			if not is_editable({ last_row, target_col }) then
+				start_insert_at(get_input_end_position())
 			else
 				start_insert_at({ original_row, target_col })
 			end
@@ -188,13 +186,13 @@ local function create_buffer()
 	for _, key in ipairs({ "<BS>", "<S-BS>", "<C-BS>", "<C-h>" }) do
 		vim.keymap.set("i", key, function()
 			local cursor = vim.api.nvim_win_get_cursor(0)
-			return cursor[2] <= get_insert_range_start_col() and "" or "<BS>"
+			return cursor[2] <= get_input_start_col() and "" or "<BS>"
 		end, { buffer = buf, expr = true })
 	end
 
 	vim.keymap.set("i", "<C-u>", function()
 		local cursor = vim.api.nvim_win_get_cursor(0)
-		local min_col = get_insert_range_start_col()
+		local min_col = get_input_start_col()
 		if cursor[2] > min_col then
 			vim.api.nvim_buf_set_text(buf, cursor[1] - 1, min_col, cursor[1] - 1, cursor[2], {})
 		end
@@ -210,8 +208,8 @@ local function create_buffer()
 		buffer = buf,
 		group = group,
 		callback = function()
-			if not is_insert_position_valid(vim.api.nvim_win_get_cursor(0)) then
-				vim.api.nvim_win_set_cursor(0, get_insert_range_start_position())
+			if not is_editable(vim.api.nvim_win_get_cursor(0)) then
+				vim.api.nvim_win_set_cursor(0, get_input_start_position())
 			end
 
 			if vim.fn.mode() ~= "i" then
