@@ -28,9 +28,6 @@
 ---@field next_id integer
 ---@field pending Ooze.RpcRequest[]
 
----@class Ooze.EvalOpts
----@field echo? boolean
-
 ---@class Ooze.ConfigServer
 ---@field host string
 ---@field port integer
@@ -42,9 +39,5 @@
 ---@field buf integer? The REPL buffer handle
 ---@field win integer? The REPL window handle
 ---@field current_package string The current Lisp package
----@field prompt_format string Format string for the prompt
----@field history string[] List of submitted commands
----@field history_index integer Current position in history navigation
----@field on_submit fun(code: string)
 
 return {}

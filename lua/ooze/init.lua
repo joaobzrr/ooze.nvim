@@ -4,13 +4,9 @@ local M = {}
 local config = require("ooze.config")
 local session = require("ooze.session")
 local ts = require("ooze.ts")
-
 local repl = require("ooze.repl")
-repl.setup({
-	on_submit = function(code)
-		M.eval(code, { echo = false })
-	end,
-})
+
+table.unpack = table.unpack or unpack -- 5.1 compatibility
 
 -- Store config separately to persist across reloads
 _G._ooze_config = _G._ooze_config or {}
@@ -22,42 +18,6 @@ local default_config = {
 		port = 4005,
 	},
 }
-
----@param result Ooze.EvalResult
----@return string[]
-local function format_eval_result(result)
-	local lines = {}
-	if result.stdout and result.stdout ~= "" then
-		for _, l in ipairs(vim.split(result.stdout, "\n")) do
-			if l ~= "" then
-				table.insert(lines, ";; " .. l)
-			end
-		end
-	end
-
-	if result.ok then
-		table.insert(lines, ";; " .. (result.value or "nil"))
-	else
-		local err_lines = vim.split(result.err or "Unknown Error", "\n")
-		for i, l in ipairs(err_lines) do
-			table.insert(lines, (i == 1 and ";; ERROR: " or ";; ") .. l)
-		end
-	end
-	return lines
-end
-
----@param code string
----@param prompt string
----@return string[]
-local function format_echo(code, prompt)
-	local lines = {}
-	local code_lines = vim.split(code, "\n")
-	local indent = string.rep(" ", #prompt)
-	for i, line in ipairs(code_lines) do
-		table.insert(lines, (i == 1 and prompt or indent) .. line)
-	end
-	return lines
-end
 
 ---Setup function called by lazy.nvim
 ---@param opts? Ooze.Config
@@ -93,28 +53,21 @@ function M.reload()
 end
 
 ---@param sexps string | string[]
----@param opts Ooze.EvalOpts
-function M.eval(sexps, opts)
-	opts = opts or {}
-	local code = type(sexps) == "table" and sexps or { sexps }
+function M.eval(sexps)
+	local code = type(sexps) == "table" and sexps or {
+		sexps --[[@as string]],
+	}
 	if #code == 0 then
 		return
 	end
 
-	repl.add_history(code)
 	if not repl.is_open() then
 		repl.open()
 	end
 
-	local function append_async(lines)
-		vim.schedule(function()
-			repl.append(lines)
-		end)
-	end
-
 	session.eval(code, function(res)
 		if not res.ok then
-			append_async({ ";; RPC ERROR: " .. (res.err or "unknown") })
+			repl.append({ ";; RPC ERROR: " .. (res.err or "unknown") })
 			return
 		end
 
@@ -122,17 +75,32 @@ function M.eval(sexps, opts)
 			repl.set_prompt_package(res.package)
 		end
 
-		local out = {}
-		local prompt = repl.get_prompt_string()
-		for i, val in ipairs(code) do
-			if opts.echo then
-				vim.list_extend(out, format_echo(val, prompt))
-			end
+		local lines = {}
+		for i, form in ipairs(code) do
+			vim.list_extend(lines, vim.split(form, "\n"))
 			if res.results and res.results[i] then
-				vim.list_extend(out, format_eval_result(res.results[i]))
+				local result = res.results[i]
+
+				if result.stdout and result.stdout ~= "" then
+					for _, l in ipairs(vim.split(result.stdout, "\n")) do
+						if l ~= "" then
+							table.insert(lines, ";; " .. l)
+						end
+					end
+				end
+
+				if result.ok then
+					table.insert(lines, ";; " .. result.value)
+				else
+					local err_lines = vim.split(result.err or "Unknown Error", "\n")
+					for j, l in ipairs(err_lines) do
+						table.insert(lines, (j == 1 and ";; ERROR: " or ";; ") .. l)
+					end
+				end
 			end
 		end
-		append_async(out)
+
+		repl.append(lines)
 	end)
 end
 
@@ -153,18 +121,18 @@ end
 
 ---Evaluate enclosing s-expression
 function M.eval_enclosing()
-	M.eval(ts.get_enclosing_sexp() or "", { echo = true })
+	M.eval(ts.get_enclosing_sexp() or "")
 end
 
 ---Evaluate outermost s-expression
 function M.eval_outermost()
-	M.eval(ts.get_outermost_sexp() or "", { echo = true })
+	M.eval(ts.get_outermost_sexp() or "")
 end
 
 ---Evaluate visual selection
 function M.eval_region()
-	local _, sline, scol, _ = unpack(vim.fn.getpos("'<"))
-	local _, eline, ecol, _ = unpack(vim.fn.getpos("'>"))
+	local _, sline, scol, _ = table.unpack(vim.fn.getpos("'<"))
+	local _, eline, ecol, _ = table.unpack(vim.fn.getpos("'>"))
 
 	if sline == 0 or (sline == eline and scol == ecol) then
 		return
@@ -173,7 +141,7 @@ function M.eval_region()
 	local forms = ts.get_selected_forms(sline - 1, scol - 1, eline - 1, ecol)
 
 	if #forms > 0 then
-		M.eval(forms, { echo = true })
+		M.eval(forms)
 	else
 		vim.notify("Ooze: No valid forms found in selection", vim.log.levels.WARN)
 	end
@@ -181,7 +149,7 @@ end
 
 ---Evaluate entire buffer
 function M.eval_buffer()
-	M.eval(ts.get_all_sexps() or {}, { echo = true })
+	M.eval(ts.get_all_sexps() or {})
 end
 
 return M
