@@ -13,19 +13,20 @@
 ---@field cb fun(res: Ooze.RpcResponse)
 
 ---@class Ooze.RpcResponse
----@field id integer
 ---@field ok boolean
+---@field id? integer
 ---@field results? Ooze.EvalResult[]
 ---@field ["package"]? string
 ---@field err? string
 
 ---@alias Ooze.RpcConnState "disconnected" | "connecting" | "connected"
 
----@class Ooze.RpcState
+---@class Ooze.ClientState
 ---@field client uv.uv_tcp_t?
 ---@field conn_state Ooze.RpcConnState
----@field buffer string[]
+---@field buffer string
 ---@field next_id integer
+---@field callbacks table<integer, fun(res: Ooze.RpcResponse)>
 ---@field pending Ooze.RpcRequest[]
 
 ---@class Ooze.ConfigServer

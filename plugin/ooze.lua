@@ -37,11 +37,11 @@ vim.api.nvim_create_user_command("OozeReplClear", function()
 end, { desc = "Ooze: Clear REPL" })
 
 vim.api.nvim_create_user_command("OozeConnect", function()
-    require("ooze.session").connect()
+    require("ooze.client").connect()
 end, { desc = "Ooze: Connect to server" })
 
 vim.api.nvim_create_user_command("OozeDisconnect", function()
-    require("ooze.session").disconnect()
+    require("ooze.client").disconnect()
 end, { desc = "Ooze: Disconnect from server" })
 
 -- Set up FileType autocommand for lazy loading

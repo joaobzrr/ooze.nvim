@@ -2,7 +2,7 @@
 local M = {}
 
 local config = require("ooze.config")
-local session = require("ooze.session")
+local client = require("ooze.client")
 local ts = require("ooze.ts")
 local repl = require("ooze.repl")
 
@@ -38,7 +38,7 @@ function M.reload()
 	end
 	repl.cleanup()
 
-	session.disconnect()
+	client.disconnect()
 
 	for name, _ in pairs(package.loaded) do
 		if name:match("^ooze") then
@@ -65,7 +65,7 @@ function M.eval(sexps)
 		repl.open()
 	end
 
-	session.eval(code, function(res)
+	client.eval(code, function(res)
 		if not res.ok then
 			repl.append({ ";; RPC ERROR: " .. (res.err or "unknown") })
 			return
@@ -110,8 +110,9 @@ function M.toggle_repl()
 		return
 	end
 
-	session.connect()
-	session.ping(function(res)
+	client.connect()
+
+	client.ping(function(res)
 		if res.package then
 			repl.set_prompt_package(res.package)
 		end
